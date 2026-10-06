@@ -82,6 +82,26 @@ def test_default_values_are_correct():
     assert settings.api_keys == {}
 
 
+def test_default_fallback_values_are_properly_populated():
+    """Confirm default fallback values are properly populated across Settings and ProviderConfig."""
+    settings = Settings(_env_file=None)
+    assert settings.app_name == "open-aiops"
+    assert settings.debug is False
+    assert settings.log_level == "INFO"
+    assert settings.default_timeout_ms == 30000.0
+    assert settings.providers == []
+    assert settings.api_keys == {}
+
+    provider = ProviderConfig(
+        name="test-provider",
+        model="test-model",
+        cost_per_1k_input_tokens=0.01,
+        cost_per_1k_output_tokens=0.02,
+        expected_latency_ms=100.0,
+    )
+    assert provider.priority == 0
+
+
 def test_invalid_log_level_raises_validation_error(monkeypatch):
     """LOG_LEVEL with an invalid level raises ValidationError."""
     monkeypatch.setenv("LOG_LEVEL", "INVALID")
