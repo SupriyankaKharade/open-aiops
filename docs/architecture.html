@@ -1,0 +1,880 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open-AIOps: architecture overview</title>
+<meta name="description" content="High-level design, low-level design, flows, and demo guide for Open-AIOps.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap">
+<style>:root{--paper:#F4F6F9;--surface:#fff;--ink:#17213A;--muted:#55627C;--rule:#CFD6E2;--built:#0F7B63;--review:#9A5B00;--planned:#4C5E80;--fail:#C0352B;--link:#1F4FD8;--code:#E9EDF4}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 1.0625rem/1.65 "Source Serif 4",Georgia,"Times New Roman",serif}
+h1,h2,h3,.ui,.chip,.btn,nav.toc,th,.st,.logh,.nh,figcaption,.asof,.foot{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+a{color:var(--link)}
+:focus-visible{outline:3px solid var(--link);outline-offset:2px}
+.skip{position:absolute;left:-999px;top:8px;background:var(--ink);color:#fff;padding:8px 12px;border-radius:4px;z-index:10}
+.skip:focus{left:8px}
+.wrap{max-width:1160px;margin:0 auto;padding:0 28px}
+
+/* hero */
+header.top{padding:56px 0 8px}
+h1{font-size:clamp(2.6rem,6.5vw,4.6rem);line-height:1;letter-spacing:-.025em;font-weight:800;margin:0 0 16px}
+.tag{max-width:44ch;font-size:1.3rem;line-height:1.5;margin:0 0 6px}
+.asof{margin:0 0 26px;color:var(--muted);font-size:.9rem;font-weight:500}
+.map{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:14px 10px;overflow-x:auto}
+#map{display:block;width:100%;min-width:780px;height:auto}
+.mapnote{margin:10px 2px 0;color:var(--muted);font-size:.95rem;max-width:80ch}
+.edge{fill:none;stroke-width:5;stroke-linejoin:round}
+.edge.req{stroke:var(--ink)}
+.edge.obs{stroke:var(--planned)}
+.edge.sat{stroke:#7C8AA5;stroke-width:3.5}
+.edge[data-status="planned"]{stroke-dasharray:11 8}
+.node .g{stroke-width:4}
+.node[data-status="built"] .g{fill:var(--built);stroke:var(--built)}
+.node[data-status="review"] .g{fill:var(--review);stroke:var(--review)}
+.node[data-status="planned"] .g{fill:#fff;stroke:var(--planned);stroke-dasharray:5 4}
+.node[data-status="external"] .g{fill:#fff;stroke:var(--muted)}
+.lbl{font:700 14px Archivo,"Helvetica Neue",Arial,sans-serif;fill:var(--ink)}
+.sub{font:400 12px "Source Serif 4",Georgia,serif;fill:var(--muted)}
+.node,.edge{transition:opacity .25s}
+#map.filtering .node.dim{opacity:.2}
+#map.filtering .edge{opacity:.2}
+#map.playing .node,#map.playing .edge{opacity:.22}
+#map.playing .seen{opacity:.65}
+#map.playing .edge.seen{stroke-dasharray:none}
+#map.playing .on{opacity:1}
+#map.playing .edge.on{stroke-dasharray:12 10;animation:flow .8s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-22}}
+.edge.fail{stroke:var(--fail)!important}
+.edge.ok{stroke:var(--built)!important}
+.node.fail .g{stroke:var(--fail);fill:#fff;stroke-dasharray:none}
+.node.ok .g{stroke:var(--built);fill:var(--built);stroke-dasharray:none}
+.controls{display:flex;flex-wrap:wrap;gap:14px 28px;justify-content:space-between;align-items:center;margin-top:18px}
+.group{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:8px;font-size:.85rem;font-weight:600;color:var(--ink);background:#fff;border:1px solid var(--rule);border-radius:999px;padding:6px 13px;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.btn{font-size:.9rem;font-weight:700;background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:6px;padding:9px 16px;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn:disabled{opacity:.4;cursor:default}
+.log{background:#fff;border:1px solid var(--rule);border-left:4px solid var(--ink);border-radius:6px;padding:14px 20px 12px;margin-top:16px;min-height:8.5rem}
+.logh{margin:0;font-size:.85rem;font-weight:700;color:var(--muted)}
+.log ol{margin:.7em 0 0;padding-left:1.4em}
+.log li{margin:.3em 0;font-size:1rem;line-height:1.5}
+.log li.cur{font-weight:600}
+.log li.hint{list-style:none;margin-left:-1.4em;color:var(--muted)}
+.log code{font:400 .86em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:.05em .3em;border-radius:3px}
+
+/* status marks */
+.st{display:inline-flex;align-items:center;gap:7px;font-size:.82rem;font-weight:700;white-space:nowrap}
+.st::before{content:"";display:inline-block;width:12px;height:12px;border-radius:50%;box-sizing:border-box;flex:none}
+.st-built{color:var(--built)}.st-built::before{background:var(--built)}
+.st-review{color:var(--review)}.st-review::before{background:radial-gradient(circle,#fff 26%,var(--review) 30%)}
+.st-planned{color:var(--planned)}.st-planned::before{border:2px dashed var(--planned)}
+.st-later{color:var(--muted)}.st-later::before{border:2px dotted #8A96AD}
+.st-ext::before{border:2px solid var(--muted);background:#fff}
+.chip .st{gap:0}
+.stt{color:var(--muted);font-size:.85rem}
+
+/* document */
+.doc{display:grid;grid-template-columns:210px minmax(0,1fr);gap:56px;margin-top:44px;padding-bottom:80px}
+nav.toc{position:sticky;top:20px;align-self:start;max-height:calc(100vh - 40px);overflow:auto;font-size:.88rem;line-height:1.35;font-weight:500}
+nav.toc ul{list-style:none;margin:0;padding:0}
+nav.toc a{display:block;padding:5px 0 5px 12px;color:var(--muted);text-decoration:none;border-left:2px solid var(--rule)}
+nav.toc a:hover{color:var(--ink)}
+nav.toc a[aria-current="true"]{color:var(--ink);border-left-color:var(--ink);font-weight:700}
+nav.toc ul ul a{padding-left:24px;font-size:.82rem}
+main{max-width:790px}
+.lead p:first-child{font-size:1.15rem}
+section{margin-top:44px;padding-top:34px;border-top:1px solid var(--rule)}
+h2{font-size:1.75rem;line-height:1.2;font-weight:800;letter-spacing:-.01em;margin:0 0 .7em}
+h3{font-size:1.2rem;line-height:1.3;font-weight:700;margin:2.1em 0 .5em}
+p{margin:.9em 0}
+ul,ol{padding-left:1.4em}
+li{margin:.35em 0}
+code{font:400 .86em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:.08em .32em;border-radius:3px}
+pre{background:#EDF0F6;border:1px solid var(--rule);border-radius:6px;padding:14px 16px;overflow-x:auto;margin:1.2em 0;line-height:1.55}
+pre code{background:none;padding:0;font-size:.82rem}
+.tw{overflow-x:auto;margin:1.2em 0}
+table{border-collapse:collapse;width:100%;font-size:.93rem;line-height:1.45}
+th{text-align:left;font-size:.82rem;font-weight:700;border-bottom:2px solid var(--ink);padding:8px 14px 8px 0;white-space:nowrap}
+td{padding:9px 14px 9px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+td:first-child{min-width:7rem}
+.notice{background:#FFF8E6;border:1px solid #E3CB92;border-left:4px solid var(--review);border-radius:6px;padding:4px 18px 6px;margin:1.6em 0;font-size:.95rem}
+.nh{margin:.8em 0 0;font-weight:800;font-size:.95rem;color:var(--review)}
+figure{margin:1.4em 0;background:#fff;border:1px solid var(--rule);border-radius:6px;padding:12px 12px 8px;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:560px;height:auto}
+figcaption{font-size:.84rem;color:var(--muted);margin-top:6px;font-weight:500}
+.figref{color:var(--muted);font-style:italic}
+.seq .sq-life{stroke:var(--rule);stroke-dasharray:4 5}
+.seq .sq-box{fill:#fff;stroke:var(--ink);stroke-width:1.5}
+.seq .sq-name{font:700 13px Archivo,"Helvetica Neue",Arial,sans-serif;fill:var(--ink);text-anchor:middle}
+.seq .sq-msg{stroke:var(--ink);stroke-width:1.6;fill:none}
+.seq .sq-ret{stroke:var(--muted);stroke-dasharray:6 5}
+.seq .sq-fail{stroke:var(--fail)}
+.seq .sq-ok{stroke:var(--built)}
+.seq .sq-lbl{font:500 12.5px "Source Serif 4",Georgia,serif;fill:var(--ink);text-anchor:middle}
+.seq .sq-note{font:italic 400 12.5px "Source Serif 4",Georgia,serif;fill:var(--muted)}
+.cb-box{fill:#fff;stroke-width:2.5}
+.cb-closed{stroke:var(--built)}.cb-open{stroke:var(--fail)}.cb-half{stroke:var(--review)}
+.foot{margin-top:56px;padding-top:16px;border-top:1px solid var(--rule);color:var(--muted);font-size:.85rem}
+
+@media (max-width:900px){
+  .wrap{padding:0 18px}
+  .doc{grid-template-columns:minmax(0,1fr);gap:20px}
+  nav.toc{position:static;max-height:none;border-bottom:1px solid var(--rule);padding-bottom:14px}
+  nav.toc ul ul{display:none}
+  header.top{padding-top:36px}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .node,.edge{transition:none}
+  #map.playing .edge.on{animation:none}
+}
+@media print{
+  nav.toc,.controls,.skip{display:none}
+  .doc{display:block}
+  body{background:#fff}
+  section{break-inside:avoid-page}
+}
+.anno{font:italic 400 12px "Source Serif 4",Georgia,serif;fill:var(--muted)}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to the document</a>
+<header class="top"><div class="wrap">
+  <h1>Open-AIOps</h1>
+  <p class="tag">A control plane for LLM traffic. It picks a provider by cost, latency and health, recovers when one fails, and reports what happened.</p>
+  <p class="asof">Architecture overview, as of 2026-10-08</p>
+  <div class="map" id="map-wrap"><svg id="map" viewBox="0 0 960 360" role="img" aria-labelledby="map-t map-d"><title id="map-t">Request path and observability path</title><desc id="map-d">A request flows from the client through the gateway, router, resilience layer and provider adapters to providers A and B. The gateway also emits events, which carry usage and cost, to a dispatcher that feeds tracing and metrics subscribers, then OpenTelemetry and exporters. Only the router is built; configuration and OpenTelemetry setup are in review or in progress; everything else is planned.</desc><path class="edge req" data-id="e-client-gw" data-status="planned" d="M60 130H200"/><path class="edge req" data-id="e-gw-router" data-status="planned" d="M200 130H340"/><path class="edge req" data-id="e-router-resil" data-status="planned" d="M340 130H480"/><path class="edge req" data-id="e-resil-adapter" data-status="planned" d="M480 130H610"/><path class="edge req" data-id="e-adapter-j" data-status="planned" d="M610 130H650"/><path class="edge req" data-id="e-j-A" data-status="planned" d="M650 130L700 80H800"/><path class="edge req" data-id="e-j-B" data-status="planned" d="M650 130L700 180H800"/><path class="edge sat" data-id="e-cfg-gw" data-status="planned" d="M140 70L200 130"/><path class="edge sat" data-id="e-price-gw" data-status="planned" d="M260 70L200 130"/><path class="edge obs" data-id="e-gw-events" data-status="planned" d="M200 130V270"/><path class="edge obs" data-id="e-events-j2" data-status="planned" d="M200 270H270"/><path class="edge obs" data-id="e-j2-trace" data-status="planned" d="M270 270L300 240H400"/><path class="edge obs" data-id="e-j2-metrics" data-status="planned" d="M270 270L300 300H400"/><path class="edge obs" data-id="e-trace-otel" data-status="planned" d="M400 240H500L530 270H570"/><path class="edge obs" data-id="e-metrics-otel" data-status="planned" d="M400 300H500L530 270"/><path class="edge obs" data-id="e-otel-export" data-status="planned" d="M570 270H730"/><g class="node" data-id="n-client" data-status="external"><title>Client or demo script: external</title><circle class="g" cx="60" cy="130" r="10"/><text class="lbl" x="60" y="160" text-anchor="middle">Client</text><text class="sub" x="60" y="175" text-anchor="middle">or demo script</text></g><g class="node" data-id="n-gw" data-status="planned"><title>Gateway orchestrator, INT-13: planned</title><circle class="g" cx="200" cy="130" r="10"/><text class="lbl" x="214" y="160" text-anchor="start">Gateway</text><text class="sub" x="214" y="175" text-anchor="start">INT-13</text></g><g class="node" data-id="n-router" data-status="built"><title>Router, INT-5: built</title><circle class="g" cx="340" cy="130" r="11"/><text class="lbl" x="340" y="160" text-anchor="middle">Router</text><text class="sub" x="340" y="175" text-anchor="middle">INT-5</text></g><g class="node" data-id="n-resil" data-status="planned"><title>Resilience, INT-6, INT-14, INT-15: planned</title><circle class="g" cx="480" cy="130" r="10"/><text class="lbl" x="480" y="160" text-anchor="middle">Resilience</text><text class="sub" x="480" y="175" text-anchor="middle">failover, retry, breaker</text><text class="sub" x="480" y="190" text-anchor="middle">INT-6, 14, 15</text></g><g class="node" data-id="n-adapter" data-status="planned"><title>Provider adapters, INT-10, INT-11: planned</title><circle class="g" cx="610" cy="130" r="10"/><text class="lbl" x="610" y="160" text-anchor="middle">Adapters</text><text class="sub" x="610" y="175" text-anchor="middle">OpenAI-compatible</text><text class="sub" x="610" y="190" text-anchor="middle">INT-10, 11</text></g><g class="node" data-id="n-A" data-status="external"><title>Provider A: external</title><circle class="g" cx="800" cy="80" r="10"/><text class="lbl" x="822" y="84" text-anchor="start">Provider A</text><text class="sub" x="822" y="99" text-anchor="start">any LLM provider</text></g><g class="node" data-id="n-B" data-status="external"><title>Provider B: external</title><circle class="g" cx="800" cy="180" r="10"/><text class="lbl" x="822" y="184" text-anchor="start">Provider B</text><text class="sub" x="822" y="199" text-anchor="start">any LLM provider</text></g><g class="node" data-id="n-cfg" data-status="review"><title>Config, INT-2, PR #6: in review</title><circle class="g" cx="140" cy="70" r="11"/><circle cx="140" cy="70" r="3.6" fill="#fff"/><text class="lbl" x="140" y="36" text-anchor="middle">Config</text><text class="sub" x="140" y="51" text-anchor="middle">INT-2, PR #6</text></g><g class="node" data-id="n-price" data-status="planned"><title>Pricing, INT-18: planned</title><circle class="g" cx="260" cy="70" r="10"/><text class="lbl" x="260" y="36" text-anchor="middle">Pricing</text><text class="sub" x="260" y="51" text-anchor="middle">INT-18</text></g><g class="node" data-id="n-events" data-status="planned"><title>Event dispatcher, INT-28: planned</title><circle class="g" cx="200" cy="270" r="10"/><text class="lbl" x="184" y="274" text-anchor="end">Event dispatcher</text><text class="sub" x="184" y="289" text-anchor="end">INT-28</text></g><g class="node" data-id="n-trace" data-status="planned"><title>Tracing subscriber, INT-29: planned</title><circle class="g" cx="400" cy="240" r="10"/><text class="lbl" x="400" y="204" text-anchor="middle">Tracing subscriber</text><text class="sub" x="400" y="219" text-anchor="middle">INT-29</text></g><g class="node" data-id="n-metrics" data-status="planned"><title>Metrics subscriber, INT-30: planned</title><circle class="g" cx="400" cy="300" r="10"/><text class="lbl" x="400" y="330" text-anchor="middle">Metrics subscriber</text><text class="sub" x="400" y="345" text-anchor="middle">INT-30</text></g><g class="node" data-id="n-otel" data-status="review"><title>OpenTelemetry SDK, INT-3 in progress: in review</title><circle class="g" cx="570" cy="270" r="11"/><circle cx="570" cy="270" r="3.6" fill="#fff"/><text class="lbl" x="556" y="304" text-anchor="start">OpenTelemetry SDK</text><text class="sub" x="556" y="319" text-anchor="start">INT-3, in progress</text></g><g class="node" data-id="n-export" data-status="planned"><title>Exporters: planned</title><circle class="g" cx="730" cy="270" r="10"/><text class="lbl" x="730" y="214" text-anchor="middle">Exporters</text><text class="sub" x="730" y="229" text-anchor="middle">console, in-memory,</text><text class="sub" x="730" y="244" text-anchor="middle">OTLP, Prometheus</text></g><text class="anno" x="212" y="198">events carry</text><text class="anno" x="212" y="212">usage and cost</text></svg></div>
+  <p class="mapnote">Dashed lines are connections that do not exist yet. In the last status check the router was merged and configuration was in review; everything else is planned.</p>
+  <div class="controls">
+    <div class="group" role="group" aria-label="Filter the map by status">
+      <button class="chip" data-filter="all" aria-pressed="true">All</button>
+      <button class="chip" data-filter="built" aria-pressed="false"><span class="st st-built"></span>Built</button>
+      <button class="chip" data-filter="review" aria-pressed="false"><span class="st st-review"></span>In review</button>
+      <button class="chip" data-filter="planned" aria-pressed="false"><span class="st st-planned"></span>Planned</button>
+      <button class="chip" data-filter="external" aria-pressed="false"><span class="st st-ext"></span>External</button>
+    </div>
+    <div class="group" role="group" aria-label="Run the golden scenario">
+      <button class="btn" id="play">Play scenario</button>
+      <button class="btn" id="step">Next step</button>
+      <button class="btn ghost" id="reset">Reset</button>
+    </div>
+  </div>
+  <div class="log" aria-live="polite">
+    <p class="logh">Simulation of the V1 golden scenario. This is planned behavior, not real output.</p>
+    <ol id="logl"><li class="hint">Press Play to watch provider A rate-limit the request and the gateway fail over to provider B.</li></ol>
+  </div>
+</div></header>
+<div class="wrap doc">
+  <nav class="toc" aria-label="Contents"><ul><li><a href="#s-1-what-open-aiops-is">1. What Open-AIOps is</a></li><li><a href="#s-2-high-level-design-hld">2. High-Level Design (HLD)</a><ul><li><a href="#2-1-system-context-and-components">2.1 System context and components</a></li><li><a href="#2-2-component-responsibilities-and-status">2.2 Component responsibilities and status</a></li><li><a href="#2-3-principles">2.3 Principles</a></li><li><a href="#2-4-technology">2.4 Technology</a></li><li><a href="#2-5-deployment-view">2.5 Deployment view</a></li></ul></li><li><a href="#s-3-low-level-design-lld">3. Low-Level Design (LLD)</a><ul><li><a href="#3-1-configuration-core-config-py-in-review">3.1 Configuration (core/config.py, in review)</a></li><li><a href="#3-2-router-governance-router-py-built">3.2 Router (governance/router.py, built)</a></li><li><a href="#3-3-provider-contract-and-adapter-int-10-int-11-planned">3.3 Provider contract and adapter (INT-10, INT-11, planned)</a></li><li><a href="#3-4-resilience">3.4 Resilience</a></li><li><a href="#3-5-gateway-orchestrator-int-13-planned">3.5 Gateway orchestrator (INT-13, planned)</a></li><li><a href="#3-6-event-contract-int-28-planned">3.6 Event contract (INT-28, planned)</a></li><li><a href="#3-7-pricing-and-cost-int-18-int-31-planned">3.7 Pricing and cost (INT-18, INT-31, planned)</a></li><li><a href="#3-8-observability-subscribers-int-29-int-30-planned">3.8 Observability subscribers (INT-29, INT-30, planned)</a></li></ul></li><li><a href="#s-4-end-to-end-flows">4. End-to-End Flows</a><ul><li><a href="#4-1-normal-request">4.1 Normal request</a></li><li><a href="#4-2-the-v1-golden-scenario-rate-limit-retry-failover">4.2 The V1 golden scenario: rate limit, retry, failover</a></li><li><a href="#4-3-failure-handling-summary">4.3 Failure handling summary</a></li><li><a href="#4-4-streaming-designed-now-built-later">4.4 Streaming (designed now, built later)</a></li></ul></li><li><a href="#s-5-data-model-summary">5. Data Model Summary</a></li><li><a href="#s-6-testing-strategy">6. Testing Strategy</a></li><li><a href="#s-7-what-is-demoable">7. What Is Demoable</a><ul><li><a href="#7-1-today-no-api-keys-no-network">7.1 Today (no API keys, no network)</a></li><li><a href="#7-2-after-v1-the-target-demo">7.2 After V1 (the target demo)</a></li><li><a href="#7-3-later-demos">7.3 Later demos</a></li></ul></li><li><a href="#s-8-open-decisions-and-risks">8. Open Decisions and Risks</a></li></ul></nav>
+  <main id="content">
+    <div class="lead"><p><strong>As of 2026-10-08.</strong> This document describes the whole system: what exists, what is under review, and what is planned. Every component carries a status so nobody mistakes the plan for the current code.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="st st-built">Built</span></td>
+<td>Merged to <code>main</code>.</td>
+</tr>
+<tr>
+<td><span class="st st-review">In review</span></td>
+<td>Open pull request.</td>
+</tr>
+<tr>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+<td>Ticketed for the first working end-to-end version.</td>
+</tr>
+<tr>
+<td><span class="st st-later">Later</span></td>
+<td>V1.1 hardening or Productization.</td>
+</tr>
+</tbody>
+</table></div>
+</div>
+    <aside class="notice"><p class="nh">Check before relying on this</p><p><strong>Verification note.</strong> The GitHub pages available when this was written were stale (they still showed one commit). Status below comes from PR threads: PR #3 (router) is shown as merged, PR #5 (package setup) is assumed merged because PR #6 conflicts with its files, and PR #6 (config) is open with conflicts. Re-check <code>main</code> before relying on the "Built" column. Ticket IDs refer to the project board and <code>ticket-plan-int-8-onward.md</code>.</p></aside>
+    <section id="s-1-what-open-aiops-is"><h2>1. What Open-AIOps is</h2><p>An open-source control plane for LLM traffic. Given a request, it should pick the best provider by cost, latency, and health, recover automatically when a provider fails or rate-limits, and report what happened: which provider served the request, how long it took, how many tokens it used, and what it cost.</p>
+<p><strong>Not in scope for the first version:</strong> a hosted service, a dashboard, a custom telemetry backend, storing prompts, and agent orchestration.</p>
+</section><section id="s-2-high-level-design-hld"><h2>2. High-Level Design (HLD)</h2><h3 id="2-1-system-context-and-components">2.1 System context and components</h3>
+<p class="figref">The map at the top of this page shows this diagram. Solid stations exist today; dashed ones are planned.</p>
+<h3 id="2-2-component-responsibilities-and-status">2.2 Component responsibilities and status</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+<th>Module</th>
+<th>Ticket</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Package metadata, dependencies, licence</td>
+<td>Version, <code>requirements*.txt</code>, <code>pyproject.toml</code>, <code>LICENSE</code></td>
+<td><code>open_aiops/__init__.py</code></td>
+<td>INT-1</td>
+<td><span class="st st-built">Built</span> <span class="stt">(verify)</span></td>
+</tr>
+<tr>
+<td>Configuration</td>
+<td>Load typed settings from environment and <code>.env</code>; provider list; API keys</td>
+<td><code>open_aiops/core/config.py</code></td>
+<td>INT-2</td>
+<td><span class="st st-review">In review</span> <span class="stt">(PR #6)</span></td>
+</tr>
+<tr>
+<td>Router</td>
+<td>Pick the best eligible provider by budgets, cost, then latency</td>
+<td><code>open_aiops/governance/router.py</code></td>
+<td>INT-5</td>
+<td><span class="st st-built">Built</span> <span class="stt">(PR #3)</span></td>
+</tr>
+<tr>
+<td>Ranked routing</td>
+<td>Return a full ranked list with rejection reasons</td>
+<td><code>governance/router.py</code> (<code>decide()</code>)</td>
+<td>INT-12</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Provider contract</td>
+<td>Request, response, usage, and error types; provider protocol</td>
+<td><code>open_aiops/providers/base.py</code></td>
+<td>INT-10</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Provider adapter</td>
+<td>Call an OpenAI-compatible API and map errors</td>
+<td><code>providers/openai_compat.py</code></td>
+<td>INT-11</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Failover</td>
+<td>On rate-limit or timeout, try the next provider</td>
+<td><code>governance/fallbacks.py</code></td>
+<td>INT-6</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Retry</td>
+<td>Retry the same provider with backoff and jitter</td>
+<td><code>governance/retry.py</code></td>
+<td>INT-14</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Circuit breaker</td>
+<td>Stop calling a failing provider for a cooldown</td>
+<td><code>governance/circuit_breaker.py</code></td>
+<td>INT-15</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Event contract</td>
+<td>Typed lifecycle events and a safe dispatcher</td>
+<td><code>open_aiops/events.py</code></td>
+<td>INT-28</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Gateway</td>
+<td>Orchestrate the whole request and emit events</td>
+<td><code>open_aiops/gateway.py</code></td>
+<td>INT-13</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Pricing</td>
+<td>Compute cost from token usage</td>
+<td><code>open_aiops/core/pricing.py</code></td>
+<td>INT-18</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Gateway cost integration</td>
+<td>Compute attempt and request cost from usage and attach it to lifecycle events</td>
+<td>gateway hook</td>
+<td>INT-31</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Telemetry wrapper</td>
+<td>Tracer provider and span helpers</td>
+<td><code>observability/telemetry.py</code></td>
+<td>INT-3</td>
+<td><span class="st st-review">In progress</span></td>
+</tr>
+<tr>
+<td>Metrics utilities</td>
+<td>Duration histogram and error counters</td>
+<td><code>observability/metrics.py</code></td>
+<td>INT-4</td>
+<td><span class="st st-planned">Planned</span></td>
+</tr>
+<tr>
+<td>Tracing subscriber</td>
+<td>Events to spans, including cost attributes</td>
+<td><code>observability/tracing_subscriber.py</code></td>
+<td>INT-29</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Metrics subscriber</td>
+<td>Events to metrics, including the cost counter</td>
+<td><code>observability/metrics_subscriber.py</code></td>
+<td>INT-30</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Demo and integration tests</td>
+<td>Golden scenario, offline</td>
+<td><code>examples/run_demo.py</code>, <code>tests/integration/</code></td>
+<td>INT-7, INT-8</td>
+<td><span class="st st-planned">Planned</span> <span class="stt">(V1)</span></td>
+</tr>
+<tr>
+<td>Rate limiting, observed latency, streaming, benchmarks</td>
+<td>Hardening</td>
+<td>various</td>
+<td>INT-16, 17, 20, 24</td>
+<td><span class="st st-later">Later</span> <span class="stt">(V1.1)</span></td>
+</tr>
+<tr>
+<td>Auth and budgets, HTTP API, cache, Docker stack, docs, release</td>
+<td>Productization</td>
+<td>various</td>
+<td>INT-21, 22, 23, 25, 26, 27</td>
+<td><span class="st st-later">Later</span></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="2-3-principles">2.3 Principles</h3>
+<ol>
+<li><strong>The gateway knows about domain events, not observability vendors.</strong> It imports no OpenTelemetry or Prometheus code. Tracing and metrics subscribe independently to lifecycle events. Cost is gateway domain data and travels on those events.</li>
+<li><strong>Telemetry never breaks a request.</strong> A failing subscriber or exporter is logged by error type and ignored. Subscribers must do bounded, local work. Exporting happens in the SDK's batching processors.</li>
+<li><strong>Privacy by default.</strong> No prompts, completions, API keys, headers, or exception messages in any event, span, or metric. Enforced by a test that sends fake secrets through the pipeline.</li>
+<li><strong>Cost is domain data</strong>, computed in the gateway where usage is known, and carried on events. It is an estimate: unknown models and missing usage produce a status, not an error.</li>
+<li><strong>Open standards.</strong> OpenTelemetry (GenAI semantic conventions) for traces and metrics. Names live in one registry and are pinned to a version because those conventions are still in development.</li>
+<li><strong>Local-first and free.</strong> Fakes for tests and demos, optional local models, in-memory exporters. No paid infrastructure.</li>
+<li><strong>Bounded metric labels.</strong> Only <code>provider</code>, <code>model</code>, <code>outcome</code>, <code>error_type</code>. Request and tenant IDs appear on spans only.</li>
+</ol>
+<h3 id="2-4-technology">2.4 Technology</h3>
+<p>Python 3.10 or newer (<code>requires-python</code>), <code>pydantic</code> v2 and <code>pydantic-settings</code>, <code>httpx</code> (async client, planned), <code>opentelemetry-api</code> and <code>opentelemetry-sdk</code>, <code>pytest</code> with <code>pytest-cov</code>. Everything is in-process and in-memory in V1: no database, no queue.</p>
+<h3 id="2-5-deployment-view">2.5 Deployment view</h3>
+<ul>
+<li><strong>V1:</strong> a library plus <code>examples/run_demo.py</code>, run locally.</li>
+<li><strong>Later:</strong> an optional FastAPI service exposing an OpenAI-compatible endpoint, a Docker image, and a compose file with an optional observability container.</li>
+</ul>
+</section><section id="s-3-low-level-design-lld"><h2>3. Low-Level Design (LLD)</h2><h3 id="3-1-configuration-core-config-py-in-review">3.1 Configuration (<code>core/config.py</code>, in review)</h3>
+<pre><code class="language-text">ProviderConfig (pydantic model)
+  name: str                       non-empty, unique label (not the vendor)
+  model: str                      non-empty
+  cost_per_1k_input_tokens: float &gt;= 0
+  cost_per_1k_output_tokens: float &gt;= 0
+  expected_latency_ms: float      &gt; 0
+
+Settings (pydantic-settings BaseSettings)
+  app_name: str = &quot;open-aiops&quot;
+  debug: bool = False
+  log_level: str = &quot;INFO&quot;         validated to DEBUG..CRITICAL
+  default_timeout_ms: float = 30000   &gt; 0
+  providers: list[ProviderConfig]     parsed from a JSON string
+  api_keys: dict[str, SecretStr]      keys by provider name
+  env_prefix = &quot;OPEN_AIOPS_&quot;          (requested in review)
+get_settings(): lru_cache singleton, no work at import time
+</code></pre>
+<p>Precedence: explicit arguments, then environment variables, then <code>.env</code>, then defaults. The <code>priority</code> field and plain-string <code>api_keys</code> in the current diff are being removed in review. Planned additions: unique provider names, an optional <code>provider_type</code> (vendor, for telemetry), and a nested section for observability settings.</p>
+<h3 id="3-2-router-governance-router-py-built">3.2 Router (<code>governance/router.py</code>, built)</h3>
+<pre><code class="language-text">RouteRequest: input_tokens, max_output_tokens, max_latency_ms?, max_cost?
+
+estimate_cost(p, req) = (req.input_tokens * p.cost_in_per_1k
+                       + req.max_output_tokens * p.cost_out_per_1k) / 1000     # worst case
+
+ModelRouter(providers)         raises ValueError if empty or duplicate names
+  mark_overloaded(name) / mark_healthy(name) / is_overloaded(name)    KeyError if unknown
+  route(req) -&gt; ProviderConfig:
+      eligible = providers not overloaded
+                 and (no max_latency_ms or expected_latency_ms &lt;= max_latency_ms)
+                 and (no max_cost or estimate_cost &lt;= max_cost)
+      if none: raise NoProviderAvailable
+      return min(eligible, key = (estimate_cost, expected_latency_ms))     # list order breaks ties
+</code></pre>
+<p>Synchronous, pure, no I/O. The overload set is process-local shared state, so per-request fallback must not use it.</p>
+<p><strong>Planned (INT-12):</strong> <code>decide(req) -&gt; RoutingDecision(ranked, rejected)</code> where <code>rejected</code> maps provider name to <code>overloaded</code>, <code>latency_budget</code>, <code>cost_budget</code>, or <code>circuit_open</code>. <code>route()</code> keeps working and returns <code>ranked[0]</code>. <code>ProviderConfig</code> is imported from <code>core.config</code>.</p>
+<h3 id="3-3-provider-contract-and-adapter-int-10-int-11-planned">3.3 Provider contract and adapter (INT-10, INT-11, planned)</h3>
+<pre><code class="language-text">ProviderRequest   messages, model, max_output_tokens, ...
+Usage             input_tokens | None, output_tokens | None      None means &quot;not reported&quot;
+ProviderResponse  text, usage, model, latency
+Provider          async complete(request) -&gt; ProviderResponse    (stream() later)
+
+Errors (ProviderError base; each carries two flags)
+  RateLimitError(retry_after_s?)   retryable, failover-eligible
+  ProviderTimeout                  retryable, failover-eligible
+  ProviderUnavailable (5xx)        retryable, failover-eligible
+  AuthError, BadRequest            neither (the same request would fail elsewhere)
+</code></pre>
+<p><code>retryable</code> decides whether the same provider is tried again (INT-14). <code>failover_eligible</code> decides whether the next provider is tried (INT-6). They are separate flags because they can differ later, for example a provider that is down for good should fail over without being retried.</p>
+<p>OpenAI-compatible adapter mapping (one adapter reaches local models and many hosted APIs):</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>HTTP result</th>
+<th>Raises</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>429 (reads <code>Retry-After</code>)</td>
+<td><code>RateLimitError</code></td>
+</tr>
+<tr>
+<td>timeout</td>
+<td><code>ProviderTimeout</code></td>
+</tr>
+<tr>
+<td>401, 403</td>
+<td><code>AuthError</code></td>
+</tr>
+<tr>
+<td>400, 422</td>
+<td><code>BadRequest</code></td>
+</tr>
+<tr>
+<td>5xx</td>
+<td><code>ProviderUnavailable</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Usage on the wire (<code>prompt_tokens</code>, <code>completion_tokens</code>) maps to the internal input/output names. The API key is read only when building the request header and never appears in logs or exceptions.</p>
+<h3 id="3-4-resilience">3.4 Resilience</h3>
+<p><strong>Failover (INT-6):</strong> over a ranked list, try each provider with a per-attempt timeout and a total deadline.</p>
+<pre><code class="language-text">for provider in ranked:
+    try:   return await call(provider)            # within remaining deadline
+    except failover_eligible error:  record it; continue     # immediate, no sleep
+    except other error:              raise                   # bad request or auth
+raise AllProvidersFailed(reasons by provider, error types only)
+</code></pre>
+<p>Known limitation: after a timeout the first provider may still complete and bill the request.</p>
+<p><strong>Retry (INT-14):</strong> retry the same provider N times before failing over. Exponential backoff with full jitter, honors <code>Retry-After</code>, capped by the request deadline. Clock, sleep, and randomness are injectable.</p>
+<p><strong>Circuit breaker (INT-15):</strong> per provider.</p>
+<figure><svg viewBox="0 0 600 240" role="img" aria-label="Circuit breaker states" class="seq">
+<defs>
+<marker id="cb-n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--ink)"/></marker>
+</defs>
+<circle cx="14" cy="60" r="5" fill="var(--ink)"/>
+<line class="sq-msg" x1="20" y1="60" x2="38" y2="60" marker-end="url(#cb-n)"/>
+<rect class="cb-box cb-closed" x="40" y="38" width="120" height="44" rx="6"/><text class="sq-name" x="100" y="65">Closed</text>
+<rect class="cb-box cb-open" x="440" y="38" width="120" height="44" rx="6"/><text class="sq-name" x="500" y="65">Open</text>
+<rect class="cb-box cb-half" x="240" y="168" width="120" height="44" rx="6"/><text class="sq-name" x="300" y="195">Half-open</text>
+<line class="sq-msg" x1="162" y1="60" x2="438" y2="60" marker-end="url(#cb-n)"/>
+<text class="sq-lbl" x="300" y="50">failures reach threshold</text>
+<line class="sq-msg" x1="462" y1="84" x2="346" y2="167" marker-end="url(#cb-n)"/>
+<text class="sq-lbl" x="380" y="112" text-anchor="end">cooldown elapsed</text>
+<line class="sq-msg" x1="362" y1="188" x2="528" y2="84" marker-end="url(#cb-n)"/>
+<text class="sq-lbl" x="495" y="160" text-anchor="start">probe fails</text>
+<line class="sq-msg" x1="238" y1="186" x2="112" y2="84" marker-end="url(#cb-n)"/>
+<text class="sq-lbl" x="170" y="152" text-anchor="end">probe succeeds</text>
+</svg><figcaption>Circuit breaker states for one provider.</figcaption></figure>
+<p>An open breaker excludes the provider from <code>decide()</code> with reason <code>circuit_open</code>. Every state change emits <code>CircuitStateChanged</code>.</p>
+<h3 id="3-5-gateway-orchestrator-int-13-planned">3.5 Gateway orchestrator (INT-13, planned)</h3>
+<pre><code class="language-text">async complete(request) -&gt; GatewayResult(response, served_by, attempts):
+    request_id = new opaque UUID;  emit RequestStarted
+    decision = router.decide(...);  emit RoutingDecided
+    run failover/retry over decision.ranked, emitting for each attempt:
+        AttemptStarted -&gt; AttemptSucceeded | AttemptFailed | AttemptCancelled
+        RetryScheduled / FallbackTriggered between attempts
+    fill cost from usage (INT-31)
+    emit RequestCompleted(total latency, total cost) or RequestFailed(error type)
+</code></pre>
+<p>The gateway never mutates the router's shared overload state per request, enforces the total deadline from <code>default_timeout_ms</code>, and imports no telemetry code.</p>
+<h3 id="3-6-event-contract-int-28-planned">3.6 Event contract (INT-28, planned)</h3>
+<p>Immutable events with: <code>schema_version</code>, <code>request_id</code> and <code>attempt_id</code> (opaque UUIDs), <code>attempt_number</code> (1-based, counts every attempt in a request), provider, model, timestamps, optional opaque <code>tenant_id</code>. Never: message content, completions, keys, headers, exception messages.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Started</th>
+<th>Valid terminal event (exactly one)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RequestStarted</code></td>
+<td><code>RequestCompleted</code> or <code>RequestFailed</code></td>
+</tr>
+<tr>
+<td><code>AttemptStarted</code> (non-streaming)</td>
+<td><code>AttemptSucceeded</code>, <code>AttemptFailed</code>, or <code>AttemptCancelled</code></td>
+</tr>
+<tr>
+<td><code>AttemptStarted</code> (streaming)</td>
+<td><code>StreamCompleted</code>, <code>StreamInterrupted</code>, or <code>AttemptCancelled</code> (or <code>AttemptFailed</code> before the first chunk)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Markers between them: <code>RoutingDecided</code>, <code>StreamFirstChunk</code>, <code>RetryScheduled</code>, <code>FallbackTriggered</code>. <code>CircuitStateChanged</code> is provider-level.</p>
+<p><code>EventDispatcher</code>: ordered delivery, each subscriber wrapped so an exception is logged by type and swallowed, per-subscriber timing with a warning over a budget, immediate return when there are no subscribers. <code>assert_well_formed(events)</code> checks the state table in tests.</p>
+<h3 id="3-7-pricing-and-cost-int-18-int-31-planned">3.7 Pricing and cost (INT-18, INT-31, planned)</h3>
+<p><code>PricingRegistry.cost(provider, model, input_tokens, output_tokens) -&gt; Cost</code> using <code>Decimal</code>, prices per 1,000 tokens read from the same <code>ProviderConfig</code> list the router uses.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>priced</code></td>
+<td>Known model, usage present</td>
+</tr>
+<tr>
+<td><code>unknown_model</code></td>
+<td>No price entry</td>
+</tr>
+<tr>
+<td><code>missing_usage</code></td>
+<td>The provider did not report tokens</td>
+</tr>
+<tr>
+<td><code>free</code></td>
+<td>Explicit zero price (for example a local model)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Who does what:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ticket</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>INT-18</td>
+<td>Pricing calculation: pure, no telemetry</td>
+</tr>
+<tr>
+<td>INT-31</td>
+<td>Gateway integration: compute attempt and request cost and attach it to lifecycle events</td>
+</tr>
+<tr>
+<td>INT-29</td>
+<td>Render cost on spans</td>
+</tr>
+<tr>
+<td>INT-30</td>
+<td>Render cost in metrics</td>
+</tr>
+</tbody>
+</table></div>
+<p>Pricing never raises. The gateway puts the attempt cost on <code>AttemptSucceeded</code> and <code>StreamCompleted</code>, and the total on <code>RequestCompleted</code>. Cost is attributed only when the gateway has usage to price. A failed attempt normally reports no usage, so it carries no attributed cost. A timed-out call may still be billed by the provider, and the gateway cannot see that.</p>
+<h3 id="3-8-observability-subscribers-int-29-int-30-planned">3.8 Observability subscribers (INT-29, INT-30, planned)</h3>
+<p><strong>Span tree</strong> built from events (a registry keyed by request and attempt ID, cleaned on every terminal event so spans cannot leak):</p>
+<pre><code class="language-text">request
+ ├─ attempt 1  provider A   ERROR rate_limited   (event: retry)
+ ├─ attempt 2  provider A   ERROR rate_limited   (event: fallback)
+ └─ attempt 3  provider B   OK   tokens in/out, cost
+</code></pre>
+<p>Attributes come only from a single registry (<code>semconv.py</code>): <code>gen_ai.provider.name</code>, <code>gen_ai.request.model</code>, <code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code>, <code>error.type</code>, plus project attributes <code>openaiops.cost.total</code>, <code>openaiops.cost.status</code>.</p>
+<p><strong>Context note.</strong> Spans are built from lifecycle events, so an attempt span marks gateway lifecycle boundaries. It is not the active OpenTelemetry context while the provider call runs. Automatic child instrumentation inside provider calls (for example HTTP client instrumentation) will not attach to the attempt span unless an explicit context bridge is added later. That is out of scope for V1.</p>
+<p><strong>Metrics:</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Instrument</th>
+<th>Type</th>
+<th>Labels</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>request duration</td>
+<td>histogram (seconds)</td>
+<td>provider, model, outcome</td>
+</tr>
+<tr>
+<td>requests</td>
+<td>counter</td>
+<td>outcome</td>
+</tr>
+<tr>
+<td>provider errors</td>
+<td>counter</td>
+<td>provider, model, error_type</td>
+</tr>
+<tr>
+<td>retries, fallbacks</td>
+<td>counters</td>
+<td>provider</td>
+</tr>
+<tr>
+<td>tokens</td>
+<td>histogram</td>
+<td>provider, model, token type</td>
+</tr>
+<tr>
+<td>cost</td>
+<td>counter</td>
+<td>provider, model</td>
+</tr>
+</tbody>
+</table></div>
+</section><section id="s-4-end-to-end-flows"><h2>4. End-to-End Flows</h2><h3 id="4-1-normal-request">4.1 Normal request</h3>
+<figure><svg viewBox="0 0 760 530" role="img" aria-label="Sequence diagram" class="seq"><defs><marker id="s1-n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--ink)"/></marker><marker id="s1-f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--fail)"/></marker><marker id="s1-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--built)"/></marker><marker id="s1-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs><line class="sq-life" x1="60.0" y1="48" x2="60.0" y2="522"/><rect class="sq-box" x="8.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="60.0" y="35">Client</text><line class="sq-life" x1="220.0" y1="48" x2="220.0" y2="522"/><rect class="sq-box" x="168.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="220.0" y="35">Gateway</text><line class="sq-life" x1="380.0" y1="48" x2="380.0" y2="522"/><rect class="sq-box" x="328.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="380.0" y="35">Router</text><line class="sq-life" x1="540.0" y1="48" x2="540.0" y2="522"/><rect class="sq-box" x="488.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="540.0" y="35">Provider</text><line class="sq-life" x1="700.0" y1="48" x2="700.0" y2="522"/><rect class="sq-box" x="648.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="700.0" y="35">Event dispatcher</text><line class="sq-msg" x1="63.0" y1="82" x2="217.0" y2="82" marker-end="url(#s1-n)"/><text class="sq-lbl" x="140.0" y="75">complete(request)</text><line class="sq-msg" x1="223.0" y1="118" x2="697.0" y2="118" marker-end="url(#s1-n)"/><text class="sq-lbl" x="460.0" y="111">RequestStarted</text><line class="sq-msg" x1="223.0" y1="154" x2="377.0" y2="154" marker-end="url(#s1-n)"/><text class="sq-lbl" x="300.0" y="147">decide(request)</text><line class="sq-msg sq-ret" x1="377.0" y1="190" x2="223.0" y2="190" marker-end="url(#s1-r)"/><text class="sq-lbl" x="300.0" y="183">ranked providers</text><line class="sq-msg" x1="223.0" y1="226" x2="697.0" y2="226" marker-end="url(#s1-n)"/><text class="sq-lbl" x="460.0" y="219">RoutingDecided</text><line class="sq-msg" x1="223.0" y1="262" x2="697.0" y2="262" marker-end="url(#s1-n)"/><text class="sq-lbl" x="460.0" y="255">AttemptStarted</text><line class="sq-msg" x1="223.0" y1="298" x2="537.0" y2="298" marker-end="url(#s1-n)"/><text class="sq-lbl" x="380.0" y="291">complete(request)</text><line class="sq-msg sq-ret" x1="537.0" y1="334" x2="223.0" y2="334" marker-end="url(#s1-r)"/><text class="sq-lbl" x="380.0" y="327">response and usage</text><line class="sq-msg" x1="223.0" y1="370" x2="697.0" y2="370" marker-end="url(#s1-n)"/><text class="sq-lbl" x="460.0" y="363">AttemptSucceeded with cost</text><line class="sq-msg" x1="223.0" y1="406" x2="697.0" y2="406" marker-end="url(#s1-n)"/><text class="sq-lbl" x="460.0" y="399">RequestCompleted</text><line class="sq-msg sq-ret" x1="217.0" y1="442" x2="63.0" y2="442" marker-end="url(#s1-r)"/><text class="sq-lbl" x="140.0" y="435">result and served_by</text><text class="sq-note" x="752.0" y="482" text-anchor="end">Tracing and metrics subscribers record from here</text></svg><figcaption>A normal request, from the client to the result.</figcaption></figure>
+<h3 id="4-2-the-v1-golden-scenario-rate-limit-retry-failover">4.2 The V1 golden scenario: rate limit, retry, failover</h3>
+<figure><svg viewBox="0 0 760 458" role="img" aria-label="Sequence diagram" class="seq"><defs><marker id="s2-n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--ink)"/></marker><marker id="s2-f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--fail)"/></marker><marker id="s2-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--built)"/></marker><marker id="s2-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs><line class="sq-life" x1="60.0" y1="48" x2="60.0" y2="450"/><rect class="sq-box" x="8.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="60.0" y="35">Gateway</text><line class="sq-life" x1="273.3" y1="48" x2="273.3" y2="450"/><rect class="sq-box" x="221.3" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="273.3" y="35">Provider A</text><line class="sq-life" x1="486.7" y1="48" x2="486.7" y2="450"/><rect class="sq-box" x="434.7" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="486.7" y="35">Provider B</text><line class="sq-life" x1="700.0" y1="48" x2="700.0" y2="450"/><rect class="sq-box" x="648.0" y="14" width="104" height="34" rx="4"/><text class="sq-name" x="700.0" y="35">Events</text><line class="sq-msg" x1="63.0" y1="82" x2="697.0" y2="82" marker-end="url(#s2-n)"/><text class="sq-lbl" x="380.0" y="75">RequestStarted, RoutingDecided</text><line class="sq-msg" x1="63.0" y1="118" x2="270.3" y2="118" marker-end="url(#s2-n)"/><text class="sq-lbl" x="166.7" y="111">attempt 1</text><line class="sq-msg sq-ret sq-fail" x1="270.3" y1="154" x2="63.0" y2="154" marker-end="url(#s2-f)"/><text class="sq-lbl" x="166.7" y="147">429</text><line class="sq-msg" x1="63.0" y1="190" x2="697.0" y2="190" marker-end="url(#s2-n)"/><text class="sq-lbl" x="380.0" y="183">AttemptFailed, RetryScheduled</text><line class="sq-msg" x1="63.0" y1="226" x2="270.3" y2="226" marker-end="url(#s2-n)"/><text class="sq-lbl" x="166.7" y="219">attempt 2 (retry)</text><line class="sq-msg sq-ret sq-fail" x1="270.3" y1="262" x2="63.0" y2="262" marker-end="url(#s2-f)"/><text class="sq-lbl" x="166.7" y="255">429</text><line class="sq-msg" x1="63.0" y1="298" x2="697.0" y2="298" marker-end="url(#s2-n)"/><text class="sq-lbl" x="380.0" y="291">AttemptFailed, FallbackTriggered</text><line class="sq-msg" x1="63.0" y1="334" x2="483.7" y2="334" marker-end="url(#s2-n)"/><text class="sq-lbl" x="273.3" y="327">attempt 3</text><line class="sq-msg sq-ret sq-ok" x1="483.7" y1="370" x2="63.0" y2="370" marker-end="url(#s2-o)"/><text class="sq-lbl" x="273.3" y="363">200 with usage</text><line class="sq-msg" x1="63.0" y1="406" x2="697.0" y2="406" marker-end="url(#s2-n)"/><text class="sq-lbl" x="380.0" y="399">AttemptSucceeded with cost, RequestCompleted</text></svg><figcaption>The V1 golden scenario: rate limit, retry, then failover to provider B.</figcaption></figure>
+<p>Result: one trace with three attempt spans, metrics showing two rate-limit errors, one retry, and one fallback, and a cost only on provider B's attempt.</p>
+<h3 id="4-3-failure-handling-summary">4.3 Failure handling summary</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rate limit, timeout, or provider 5xx</td>
+<td>Retry (if configured), then next provider</td>
+</tr>
+<tr>
+<td>Bad request or auth error</td>
+<td>Raised immediately, no failover</td>
+</tr>
+<tr>
+<td>Every provider failed</td>
+<td><code>AllProvidersFailed</code> with per-provider error types</td>
+</tr>
+<tr>
+<td>No provider fits the budgets</td>
+<td><code>NoProviderAvailable</code></td>
+</tr>
+<tr>
+<td>Deadline exceeded</td>
+<td>Raised with the attempts made so far</td>
+</tr>
+<tr>
+<td>Subscriber or exporter failure</td>
+<td>Logged by type, the request is unaffected</td>
+</tr>
+<tr>
+<td>Unknown model or missing usage</td>
+<td>Cost status recorded, the request is unaffected</td>
+</tr>
+<tr>
+<td>Client cancels</td>
+<td><code>AttemptCancelled</code>, then <code>RequestFailed(cancelled)</code>, spans closed</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="4-4-streaming-designed-now-built-later">4.4 Streaming (designed now, built later)</h3>
+<p>Failover is allowed only <strong>before the first chunk</strong>. After that an error ends the response as <code>StreamInterrupted</code>. Usage comes from the final chunk. The span stays open until the stream completes, is interrupted, or is cancelled.</p>
+</section><section id="s-5-data-model-summary"><h2>5. Data Model Summary</h2><p><code>ProviderConfig</code> → <code>RouteRequest</code> → <code>RoutingDecision</code> → <code>ProviderRequest</code> → <code>ProviderResponse(Usage)</code> → <code>Cost</code> → <code>GatewayResult(response, served_by, attempts)</code>, with lifecycle events emitted alongside. No persistence in V1: all state (overload flags, breaker state, latency averages, budgets) is in-memory per process. That keeps V1 free to run, and scaling out later means stateless workers with optional shared state.</p>
+</section><section id="s-6-testing-strategy"><h2>6. Testing Strategy</h2><ul>
+<li><strong>Offline always:</strong> fake providers (scripted 200, 429, timeout, slow stream), fake clock and sleep, in-memory span and metric readers. No network, no API keys.</li>
+<li><strong>Layers:</strong> unit tests per module (one test file each), then integration tests through the gateway, then the golden scenario as both a test and the demo.</li>
+<li><strong>Hard invariants as tests:</strong> no secrets or prompt text in any exported telemetry; telemetry failure does not change the response; every started request and attempt reaches exactly one terminal event; spans never leak.</li>
+<li><strong>CI (planned, INT-9):</strong> <code>pytest</code> and <code>ruff</code> on supported Python versions for every pull request.</li>
+</ul>
+</section><section id="s-7-what-is-demoable"><h2>7. What Is Demoable</h2><h3 id="7-1-today-no-api-keys-no-network">7.1 Today (no API keys, no network)</h3>
+<p>Only the router's decision logic runs. It is real but not yet visual.</p>
+<p><strong>Demo A: show routing decisions (works on <code>main</code> once PR #3 is merged).</strong></p>
+<pre><code class="language-bash">python -m pytest tests/test_governance.py -v        # 9 routing tests
+</code></pre>
+<p>Or live, using the same providers as the test fixture:</p>
+<pre><code class="language-python">from open_aiops.governance.router import ModelRouter, ProviderConfig, RouteRequest
+
+def p(name, cost, ms):
+    return ProviderConfig(name=name, model=f&quot;{name}-model&quot;,
+                          cost_per_1k_input_tokens=cost,
+                          cost_per_1k_output_tokens=cost,
+                          expected_latency_ms=ms)
+
+router = ModelRouter([p(&quot;primary&quot;, 1.0, 800), p(&quot;secondary&quot;, 2.0, 300), p(&quot;local&quot;, 0.0, 2000)])
+req = RouteRequest(input_tokens=1000, max_output_tokens=1000)
+
+print(router.route(req).name)                                   # local: the cheapest
+fast = req.model_copy(update={&quot;max_latency_ms&quot;: 1000})
+print(router.route(fast).name)                                  # primary: latency budget removes local
+router.mark_overloaded(&quot;primary&quot;)
+print(router.route(fast).name)                                  # secondary: the overloaded one is skipped
+</code></pre>
+<p>This matches the expected results asserted in <code>tests/test_governance.py</code>. After the follow-up that moves <code>ProviderConfig</code> into <code>core.config</code>, import it from <code>open_aiops.core.config</code>.</p>
+<p><strong>Demo B: configuration (after PR #6 merges).</strong> Set an environment variable and show typed loading and masked keys. Variable names will change to the <code>OPEN_AIOPS_</code> prefix. After the review fixes, a key set in settings must not appear in <code>repr(settings)</code> or <code>model_dump_json()</code>.</p>
+<h3 id="7-2-after-v1-the-target-demo">7.2 After V1 (the target demo)</h3>
+<p>One command, fully offline:</p>
+<pre><code class="language-bash">python examples/run_demo.py
+</code></pre>
+<p>It runs the golden scenario with fake providers and prints, for example (target output, not yet real):</p>
+<pre><code class="language-text">request req-3f2a   outcome=ok   total=412 ms
+ ├─ route       ranked: provider_a, provider_b
+ ├─ attempt 1   provider_a   ERROR rate_limited          (retry scheduled)
+ ├─ attempt 2   provider_a   ERROR rate_limited          (fallback to provider_b)
+ └─ attempt 3   provider_b   OK  in=120 out=340  cost=$0.0043
+metrics: requests{ok}=1  errors{provider_a,rate_limited}=2  retries=1  fallbacks=1
+cost: request total $0.0043 (failed attempts reported no usage, so no attributed cost)
+check: no secrets or prompt text in exported telemetry
+check: telemetry failure injected, response unchanged
+</code></pre>
+<p>A good five-minute presentation: (1) the problem, (2) the diagram in 2.1, (3) run the demo and read the trace, (4) show the failing-exporter and secrets checks, (5) show a provider swap by editing config only.</p>
+<h3 id="7-3-later-demos">7.3 Later demos</h3>
+<ul>
+<li><strong>V1.1:</strong> streaming with failover before the first chunk, proactive rate limiting, a benchmark report.</li>
+<li><strong>Productization:</strong> the same flow through an OpenAI-compatible HTTP endpoint (point an existing OpenAI client at it), traces in a free local observability container, <code>docker compose up</code>, auth and budgets.</li>
+<li><strong>Optional real providers (free):</strong> a local Ollama model as the fallback and a free-tier hosted API as the primary, to show real latency and a real rate limit. Free-tier limits change often, so read them from configuration and never hard-code them.</li>
+</ul>
+</section><section id="s-8-open-decisions-and-risks"><h2>8. Open Decisions and Risks</h2><div class="tw"><table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sync or async provider calls</td>
+<td>Recommend async end to end; the router stays sync</td>
+</tr>
+<tr>
+<td>5xx from a provider</td>
+<td>Retryable and failover-eligible (flags in INT-10). INT-6's ticket text names only 429 and timeouts, so confirm with its owner</td>
+</tr>
+<tr>
+<td>Wrap LiteLLM or own provider interface</td>
+<td>Recommend own thin interface; decide before INT-10</td>
+</tr>
+<tr>
+<td>Minimum Python version</td>
+<td><code>&gt;=3.10</code> today; 3.10 reaches end of life around this month, so decide before CI</td>
+</tr>
+<tr>
+<td>GenAI semantic conventions are unstable</td>
+<td>Pin one version, keep names in one registry</td>
+</tr>
+<tr>
+<td>Critical path runs through INT-28, then INT-13</td>
+<td>Review the event contract first</td>
+</tr>
+<tr>
+<td>Nothing connects the parts until INT-13</td>
+<td>The gateway is the milestone for the first real run</td>
+</tr>
+<tr>
+<td>README and package description claim "governed"</td>
+<td>Soften until auth and budgets exist</td>
+</tr>
+</tbody>
+</table></div></section>
+    <footer class="foot">Generated from docs/architecture.md by scripts/build_architecture.py. Edit the Markdown, not this file.</footer>
+  </main>
+</div>
+<script>(function () {
+  var svg = document.getElementById('map');
+  function els(ids) {
+    return ids.map(function (i) { return svg.querySelector('[data-id="' + i + '"]'); }).filter(Boolean);
+  }
+
+  /* status filter */
+  var chips = document.querySelectorAll('.chip');
+  chips.forEach(function (c) {
+    c.addEventListener('click', function () {
+      chips.forEach(function (x) { x.setAttribute('aria-pressed', x === c ? 'true' : 'false'); });
+      var f = c.getAttribute('data-filter');
+      svg.classList.toggle('filtering', f !== 'all');
+      svg.querySelectorAll('.node').forEach(function (n) {
+        n.classList.toggle('dim', f !== 'all' && n.getAttribute('data-status') !== f);
+      });
+    });
+  });
+
+  /* golden scenario */
+  var REQ = ['n-resil', 'e-router-resil', 'e-resil-adapter', 'n-adapter', 'e-adapter-j'];
+  var steps = [
+    { on: ['n-client', 'e-client-gw', 'n-gw'],
+      t: 'The client calls the gateway. <code>RequestStarted</code> is emitted.' },
+    { on: ['n-gw', 'e-gw-router', 'n-router'],
+      t: 'The router ranks the providers. A is cheaper, so A comes first and B second. <code>RoutingDecided</code> is emitted.' },
+    { on: REQ.concat(['e-j-A', 'n-A']), fail: ['n-A', 'e-j-A'],
+      t: 'Attempt 1 goes to provider A. A answers 429 (rate limited). <code>AttemptFailed</code>, then <code>RetryScheduled</code>.' },
+    { on: REQ.concat(['e-j-A', 'n-A']), fail: ['n-A', 'e-j-A'],
+      t: 'The retry on A also gets 429. <code>AttemptFailed</code>. The retries are used up.' },
+    { on: ['n-resil', 'e-adapter-j', 'e-j-B', 'n-B', 'n-price', 'e-price-gw'], ok: ['n-B', 'e-j-B'],
+      t: '<code>FallbackTriggered</code> from A to B. B answers 200 and reports its token usage. The gateway prices it. <code>AttemptSucceeded</code>.' },
+    { on: ['n-gw', 'e-gw-events', 'n-events', 'e-events-j2', 'e-j2-trace', 'e-j2-metrics', 'n-trace', 'n-metrics', 'e-trace-otel', 'e-metrics-otel', 'n-otel', 'e-otel-export', 'n-export'],
+      t: 'The event dispatcher feeds the tracing and metrics subscribers. They record one trace with three attempt spans, two rate-limit errors, one retry and one fallback.' },
+    { on: ['n-gw', 'e-client-gw', 'n-client'],
+      t: '<code>RequestCompleted</code>. The client gets the response served by B. Cost is attached to B\'s attempt only, because failed attempts report no usage. A telemetry failure here would not change this result.' }
+  ];
+  var idx = -1, timer = null;
+  var logl = document.getElementById('logl');
+  var play = document.getElementById('play'), step = document.getElementById('step'), reset = document.getElementById('reset');
+
+  function render() {
+    svg.querySelectorAll('.node,.edge').forEach(function (e) { e.classList.remove('on', 'seen', 'fail', 'ok'); });
+    svg.classList.toggle('playing', idx >= 0);
+    for (var i = 0; i <= idx; i++) {
+      els(steps[i].on).forEach(function (e) { e.classList.add('seen'); });
+      els(steps[i].fail || []).forEach(function (e) { e.classList.add('fail'); });
+      els(steps[i].ok || []).forEach(function (e) { e.classList.add('ok'); });
+    }
+    if (idx >= 0) els(steps[idx].on).forEach(function (e) { e.classList.add('on'); });
+    if (idx < 0) {
+      logl.innerHTML = '<li class="hint">Press Play to watch provider A rate-limit the request and the gateway fail over to provider B.</li>';
+    } else {
+      logl.innerHTML = steps.slice(0, idx + 1).map(function (s, i) {
+        return '<li' + (i === idx ? ' class="cur"' : '') + '>' + s.t + '</li>';
+      }).join('');
+    }
+    step.disabled = idx >= steps.length - 1;
+    play.textContent = timer ? 'Pause' : (idx >= steps.length - 1 ? 'Replay' : 'Play scenario');
+  }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function advance() {
+    if (idx < steps.length - 1) idx++;
+    if (idx >= steps.length - 1) stop();
+    render();
+  }
+  play.addEventListener('click', function () {
+    if (timer) { stop(); render(); return; }
+    if (idx >= steps.length - 1) idx = -1;
+    advance();
+    if (idx < steps.length - 1) timer = setInterval(advance, 2200);
+    render();
+  });
+  step.addEventListener('click', function () { stop(); advance(); });
+  reset.addEventListener('click', function () { stop(); idx = -1; render(); });
+  render();
+
+  /* contents highlight */
+  var links = {};
+  document.querySelectorAll('nav.toc a').forEach(function (a) { links[a.getAttribute('href').slice(1)] = a; });
+  var heads = Array.prototype.slice.call(document.querySelectorAll('main h2[id], main h3[id], main section[id]'));
+  if ('IntersectionObserver' in window) {
+    var cur = null;
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting && links[en.target.id]) {
+          if (cur) cur.removeAttribute('aria-current');
+          cur = links[en.target.id];
+          cur.setAttribute('aria-current', 'true');
+        }
+      });
+    }, { rootMargin: '0px 0px -75% 0px' });
+    heads.forEach(function (h) { io.observe(h); });
+  }
+})();
+</script>
+</body>
+</html>
