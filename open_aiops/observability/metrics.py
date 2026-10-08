@@ -6,9 +6,11 @@ Implements INT-4 metrics instruments according to architecture section 3.8.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Sequence
 from opentelemetry import metrics
 from opentelemetry.metrics import Counter, Histogram, Meter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import MetricReader
 
 logger = logging.getLogger(__name__)
 
@@ -142,3 +144,47 @@ class MetricsManager:
             self.cost.add(amount, attributes=attributes)
         except Exception as exc:
             logger.warning("Failed to record cost metric: %s", type(exc).__name__)
+
+
+_DEFAULT_MANAGER: Optional[MetricsManager] = None
+
+
+def get_metrics_manager() -> MetricsManager:
+    """Get or create the global MetricsManager."""
+    global _DEFAULT_MANAGER
+    if _DEFAULT_MANAGER is None:
+        _DEFAULT_MANAGER = MetricsManager()
+    return _DEFAULT_MANAGER
+
+
+def init_metrics(
+    metric_readers: Optional[Sequence[MetricReader]] = None,
+    force_reset: bool = False,
+) -> MetricsManager:
+    """Initialize OpenTelemetry MeterProvider and configure instruments.
+
+    Args:
+        metric_readers: Optional readers/exporters (e.g. InMemoryMetricReader).
+        force_reset: Reset existing MeterProvider and instruments (useful for tests).
+
+    Returns:
+        A configured MetricsManager instance.
+    """
+    global _DEFAULT_MANAGER
+    if force_reset:
+        try:
+            from opentelemetry.metrics import _internal as mi
+
+            mi._METER_PROVIDER = None
+            if hasattr(mi, "_METER_PROVIDER_SET_ONCE"):
+                mi._METER_PROVIDER_SET_ONCE._done = False
+        except Exception:
+            pass
+        _DEFAULT_MANAGER = None
+
+    provider = MeterProvider(metric_readers=list(metric_readers) if metric_readers else [])
+    metrics.set_meter_provider(provider)
+
+    meter = provider.get_meter(_METER_NAME)
+    _DEFAULT_MANAGER = MetricsManager(meter=meter)
+    return _DEFAULT_MANAGER
