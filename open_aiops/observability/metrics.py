@@ -70,3 +70,75 @@ class MetricsManager:
             unit="USD",
             description="Estimated financial cost in USD",
         )
+
+    def record_request_duration(
+        self, duration_s: float, provider: str, model: str, outcome: str
+    ) -> None:
+        """Record request duration in seconds with bounded labels."""
+        try:
+            attributes = {
+                "provider": provider,
+                "model": model,
+                "outcome": outcome,
+            }
+            self.request_duration.record(duration_s, attributes=attributes)
+        except Exception as exc:
+            logger.warning("Failed to record request duration metric: %s", type(exc).__name__)
+
+    def record_request(self, outcome: str) -> None:
+        """Record completed/failed request count."""
+        try:
+            self.requests.add(1, attributes={"outcome": outcome})
+        except Exception as exc:
+            logger.warning("Failed to record request metric: %s", type(exc).__name__)
+
+    def record_provider_error(self, provider: str, model: str, error_type: str) -> None:
+        """Record a provider error by error type."""
+        try:
+            attributes = {
+                "provider": provider,
+                "model": model,
+                "error_type": error_type,
+            }
+            self.provider_errors.add(1, attributes=attributes)
+        except Exception as exc:
+            logger.warning("Failed to record provider error metric: %s", type(exc).__name__)
+
+    def record_retry(self, provider: str) -> None:
+        """Record a retry scheduled on a provider."""
+        try:
+            self.retries.add(1, attributes={"provider": provider})
+        except Exception as exc:
+            logger.warning("Failed to record retry metric: %s", type(exc).__name__)
+
+    def record_fallback(self, provider: str) -> None:
+        """Record a fallback triggered away from a failing provider."""
+        try:
+            self.fallbacks.add(1, attributes={"provider": provider})
+        except Exception as exc:
+            logger.warning("Failed to record fallback metric: %s", type(exc).__name__)
+
+    def record_tokens(
+        self, count: int, provider: str, model: str, token_type: str
+    ) -> None:
+        """Record token usage (input, output, or total)."""
+        try:
+            attributes = {
+                "provider": provider,
+                "model": model,
+                "token_type": token_type,
+            }
+            self.tokens.record(count, attributes=attributes)
+        except Exception as exc:
+            logger.warning("Failed to record tokens metric: %s", type(exc).__name__)
+
+    def record_cost(self, amount: float, provider: str, model: str) -> None:
+        """Record monetary cost in USD."""
+        try:
+            attributes = {
+                "provider": provider,
+                "model": model,
+            }
+            self.cost.add(amount, attributes=attributes)
+        except Exception as exc:
+            logger.warning("Failed to record cost metric: %s", type(exc).__name__)
