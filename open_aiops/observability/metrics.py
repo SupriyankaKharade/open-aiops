@@ -1,6 +1,25 @@
 """OpenTelemetry metrics utilities for Open-AIOps.
 
-Implements INT-4 metrics instruments according to architecture section 3.8.
+Implements INT-4 metrics instruments specified in architecture section 3.8:
+- Request duration histogram (seconds)
+- Requests counter
+- Provider errors counter
+- Retries and fallbacks counters
+- Token usage histogram
+- Monetary cost counter
+
+Architectural Principles:
+- Telemetry Never Breaks Traffic (§2.3 Principle 2): Metric recording
+  exceptions are safely swallowed and logged by type.
+- Bounded Cardinality (§2.3 Principle 7): Labels are strictly restricted to
+  `provider`, `model`, `outcome`, `error_type`, and `token_type`. No high-cardinality
+  keys (e.g., request_id or tenant_id) are allowed on metric instruments.
+
+Usage Example:
+    >>> from open_aiops.observability.metrics import init_metrics, get_metrics_manager
+    >>> manager = init_metrics()
+    >>> manager.record_request_duration(0.35, provider="openai", model="gpt-4o", outcome="success")
+    >>> manager.record_tokens(120, provider="openai", model="gpt-4o", token_type="input")
 """
 
 from __future__ import annotations
