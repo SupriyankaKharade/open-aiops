@@ -8,7 +8,7 @@ from pydantic import SecretStr, ValidationError
 from open_aiops.core.config import ProviderConfig, Settings, get_settings
 
 
-def test_default_settings_and_fallback_values(monkeypatch):
+def test_default_fallback_values_are_properly_populated(monkeypatch):
     """Verify default settings and fallback values across Settings and ProviderConfig."""
     for env_key in [
         "OPEN_AIOPS_APP_NAME",
