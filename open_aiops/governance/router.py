@@ -6,6 +6,7 @@ wins, then the fastest, then the one listed first.
 """
 
 from collections.abc import Iterable
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,17 @@ class RouteRequest(BaseModel):
     max_output_tokens: int = Field(ge=0)
     max_latency_ms: float | None = Field(default=None, gt=0)
     max_cost: float | None = Field(default=None, ge=0)
+
+
+class RejectionReason(str, Enum):
+    OVERLOADED = "overloaded"
+    LATENCY = "latency"
+    COST = "cost"
+
+
+class RoutingDecision(BaseModel):
+    ranked: list[ProviderConfig]
+    rejected: dict[str, RejectionReason]
 
 
 class NoProviderAvailable(Exception):
@@ -58,23 +70,35 @@ class ModelRouter:
     def is_overloaded(self, name: str) -> bool:
         return name in self._overloaded
 
-    def route(self, request: RouteRequest) -> ProviderConfig:
-        eligible = [p for p in self._providers if self._is_eligible(p, request)]
-        if not eligible:
-            raise NoProviderAvailable(
-                f"No provider fits the request (overloaded: {sorted(self._overloaded)})"
-            )
-        # min() returns the first of equal keys, so list order breaks ties.
-        return min(eligible, key=lambda p: (estimate_cost(p, request), p.expected_latency_ms))
+    def decide(self, request: RouteRequest) -> RoutingDecision:
+        """Rank eligible providers best-first and record why the rest were rejected."""
+        eligible: list[ProviderConfig] = []
+        rejected: dict[str, RejectionReason] = {}
+        for p in self._providers:
+            reason = self._rejection_reason(p, request)
+            if reason is None:
+                eligible.append(p)
+            else:
+                rejected[p.name] = reason
+        # sorted() is stable, so list order breaks remaining ties.
+        ranked = sorted(eligible, key=lambda p: (estimate_cost(p, request), p.expected_latency_ms))
+        return RoutingDecision(ranked=ranked, rejected=rejected)
 
-    def _is_eligible(self, provider: ProviderConfig, request: RouteRequest) -> bool:
+    def route(self, request: RouteRequest) -> ProviderConfig:
+        decision = self.decide(request)
+        if not decision.ranked:
+            reasons = {name: reason.value for name, reason in decision.rejected.items()}
+            raise NoProviderAvailable(f"No provider fits the request (rejected: {reasons})")
+        return decision.ranked[0]
+
+    def _rejection_reason(self, provider: ProviderConfig, request: RouteRequest) -> RejectionReason | None:
         if provider.name in self._overloaded:
-            return False
+            return RejectionReason.OVERLOADED
         if request.max_latency_ms is not None and provider.expected_latency_ms > request.max_latency_ms:
-            return False
+            return RejectionReason.LATENCY
         if request.max_cost is not None and estimate_cost(provider, request) > request.max_cost:
-            return False
-        return True
+            return RejectionReason.COST
+        return None
 
     def _check_known(self, name: str) -> None:
         if not any(p.name == name for p in self._providers):
