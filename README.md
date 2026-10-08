@@ -2,6 +2,8 @@
 
 OpenAIOps is an open-source AI operations control plane designed to provide intelligent LLM routing, policy governance, configuration management, and operational observability across model providers.
 
+Architecture docs: https://supriyankakharade.github.io/open-aiops/
+
 ---
 
 ## Architecture Overview
@@ -29,7 +31,7 @@ tests/                # Test suites for each subsystem
 1. **Clone the repository and set up a virtual environment:**
 
    ```bash
-   git clone https://github.com/VaibhavSoni24/open-aiops.git
+   git clone https://github.com/SupriyankaKharade/open-aiops.git
    cd open-aiops
    python -m venv .venv
    ```
@@ -70,19 +72,19 @@ cp .env.example .env
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `APP_NAME` | `str` | `"open-aiops"` | Application identifier |
-| `DEBUG` | `bool` | `false` | Enable verbose debugging |
-| `LOG_LEVEL` | `str` | `"INFO"` | Logging severity (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `DEFAULT_TIMEOUT_MS` | `float` | `30000.0` | Default request timeout in milliseconds (`> 0`) |
-| `PROVIDERS` | `json` | `[]` | JSON array of provider configurations |
-| `API_KEYS` | `json` | `{}` | JSON map of provider names to API keys |
+| `OPEN_AIOPS_APP_NAME` | `str` | `"open-aiops"` | Application identifier |
+| `OPEN_AIOPS_DEBUG` | `bool` | `false` | Enable verbose debugging |
+| `OPEN_AIOPS_LOG_LEVEL` | `str` | `"INFO"` | Logging severity (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
+| `OPEN_AIOPS_DEFAULT_TIMEOUT_MS` | `float` | `30000.0` | Default request timeout in milliseconds (`> 0`) |
+| `OPEN_AIOPS_PROVIDERS` | `json` | `[]` | JSON array of provider configurations |
+| `OPEN_AIOPS_API_KEYS` | `json` | `{}` | JSON map of provider names to SecretStr API keys |
 
 ### Example Provider Configuration
 
 In `.env` or the environment:
 
 ```env
-PROVIDERS='[{"name":"gpt-4","model":"gpt-4-turbo","cost_per_1k_input_tokens":0.01,"cost_per_1k_output_tokens":0.03,"expected_latency_ms":250.0,"priority":1}]'
+OPEN_AIOPS_PROVIDERS='[{"name":"gpt-4","model":"gpt-4-turbo","cost_per_1k_input_tokens":0.01,"cost_per_1k_output_tokens":0.03,"expected_latency_ms":250.0}]'
 ```
 
 ### Programmatic Access
@@ -95,7 +97,7 @@ print(settings.app_name)
 print(settings.providers)
 ```
 
-Sensitive keys in `api_keys` are automatically masked when converting settings to string representations for safe logging.
+Sensitive keys in `api_keys` are typed as Pydantic `SecretStr`, preventing raw credential leakage in `repr()`, `str()`, or `model_dump_json()`.
 
 ---
 
