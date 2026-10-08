@@ -6,7 +6,7 @@ pydantic-settings, providing typed models, defaults, and validation.
 
 from functools import lru_cache
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -16,7 +16,7 @@ class ProviderConfig(BaseModel):
     """Configuration for an LLM provider.
 
     Defines routing, performance, and cost parameters for model endpoints.
-    Fully compatible with ModelRouter requirements.
+    Compatible with ModelRouter requirements.
     """
 
     name: str = Field(..., min_length=1, description="Unique provider identifier")
@@ -29,11 +29,6 @@ class ProviderConfig(BaseModel):
     )
     expected_latency_ms: float = Field(
         ..., gt=0, description="Expected response latency in milliseconds"
-    )
-    priority: int = Field(
-        default=0,
-        ge=0,
-        description="Provider selection priority (higher = preferred, default 0)",
     )
 
     @field_validator("name", "model")
@@ -60,7 +55,7 @@ class Settings(BaseSettings):
     providers: list[ProviderConfig] = Field(
         default_factory=list, description="Configured LLM providers"
     )
-    api_keys: dict[str, str] = Field(
+    api_keys: dict[str, SecretStr] = Field(
         default_factory=dict,
         description="Provider API keys mapped by provider identifier",
     )
@@ -82,24 +77,6 @@ class Settings(BaseSettings):
                 f"Invalid log_level '{v}'. Must be one of {sorted(VALID_LOG_LEVELS)}"
             )
         return upper_v
-
-    def get_masked_api_keys(self) -> dict[str, str]:
-        """Return API keys masked for safe logging and display."""
-        return {
-            k: (v[:3] + "..." + v[-3:] if len(v) > 6 else "***")
-            for k, v in self.api_keys.items()
-        }
-
-    def __repr__(self) -> str:
-        """Safe string representation masking sensitive API keys."""
-        data = self.model_dump()
-        data["api_keys"] = self.get_masked_api_keys()
-        fields_str = ", ".join(f"{k}={v!r}" for k, v in data.items())
-        return f"{self.__class__.__name__}({fields_str})"
-
-    def __str__(self) -> str:
-        """Safe string representation masking sensitive API keys."""
-        return self.__repr__()
 
 
 @lru_cache
