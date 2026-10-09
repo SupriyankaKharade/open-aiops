@@ -257,8 +257,8 @@ def test_free_text_and_credentials_rejected_as_error_type(isolated_meter_setup):
     """Arbitrary free-text messages and credential strings are rejected and never echoed."""
     reader, recorder = isolated_meter_setup
 
-    dummy_secret = "sk-proj-test123456789secret"
-    bearer_token = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    dummy_secret = "fake-api-key-dummy-not-real-token"
+    bearer_token = "Bearer fake-test-token-not-a-real-jwt"
     user_free_text = "Prompt failed: user account 42 suspended"
     short_error_msg = "Connection dropped by peer"
 
