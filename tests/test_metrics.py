@@ -251,3 +251,81 @@ def test_aliases_and_helper_functions():
     )
     metrics_map = _extract_metrics_by_name(reader)
     assert INSTRUMENT_PROVIDER_ERRORS in metrics_map
+
+
+def test_free_text_and_credentials_rejected_as_error_type(isolated_meter_setup):
+    """Arbitrary free-text messages and credential strings are rejected and never echoed."""
+    reader, recorder = isolated_meter_setup
+
+    dummy_secret = "sk-proj-test123456789secret"
+    bearer_token = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    user_free_text = "Prompt failed: user account 42 suspended"
+    short_error_msg = "Connection dropped by peer"
+
+    # 1. Dummy API key
+    with pytest.raises(ValueError) as exc_info:
+        recorder.record_error(provider="openai", model="gpt-4o", error_type=dummy_secret)
+    # Ensure raw secret is NOT echoed in the exception message
+    assert dummy_secret not in str(exc_info.value)
+    assert "Invalid error_type" in str(exc_info.value)
+
+    # 2. Bearer token
+    with pytest.raises(ValueError) as exc_info:
+        recorder.record_error(provider="openai", model="gpt-4o", error_type=bearer_token)
+    assert bearer_token not in str(exc_info.value)
+
+    # 3. User-provided free-text
+    with pytest.raises(ValueError) as exc_info:
+        recorder.record_error(provider="openai", model="gpt-4o", error_type=user_free_text)
+    assert "user account" not in str(exc_info.value)
+
+    # 4. Short error message
+    with pytest.raises(ValueError) as exc_info:
+        recorder.record_error(provider="openai", model="gpt-4o", error_type=short_error_msg)
+
+    # Assert that no error metrics were exported containing any sensitive or free-text content
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_PROVIDER_ERRORS not in metrics_map
+
+
+def test_supported_categories_and_exception_classes(isolated_meter_setup):
+    """Documented categories, case-insensitive slugs, and exception classes/instances work."""
+    reader, recorder = isolated_meter_setup
+
+    # Category slugs
+    recorder.record_error(provider="openai", model="gpt-4o", error_type="rate_limit")
+    recorder.record_error(provider="openai", model="gpt-4o", error_type="timeout")
+
+    # Case-insensitive category slugs
+    recorder.record_error(provider="openai", model="gpt-4o", error_type="RATE_LIMIT")
+
+    # Exception classes directly
+    recorder.record_error(provider="anthropic", model="claude-3", error_type=TimeoutError)
+    recorder.record_error(provider="anthropic", model="claude-3", error_type=ValueError)
+
+    # Custom exception class and instance
+    class CustomUpstreamError(Exception):
+        pass
+
+    custom_instance = CustomUpstreamError("Sensitive database password: db_pass_secret_987")
+    recorder.record_error(provider="cohere", model="command-r", error_type=custom_instance)
+    recorder.record_error(provider="cohere", model="command-r", error_type=CustomUpstreamError)
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_PROVIDER_ERRORS in metrics_map
+    error_metric = metrics_map[INSTRUMENT_PROVIDER_ERRORS]
+
+    data_points = list(error_metric.data.data_points)
+    recorded_types = {p.attributes["error_type"] for p in data_points}
+
+    assert "rate_limit" in recorded_types
+    assert "timeout" in recorded_types
+    assert "TimeoutError" in recorded_types
+    assert "ValueError" in recorded_types
+    assert "CustomUpstreamError" in recorded_types
+
+    # Ensure the sensitive exception message is never present in any attribute value
+    for point in data_points:
+        for val in point.attributes.values():
+            assert "db_pass_secret" not in str(val)
+            assert "database password" not in str(val)

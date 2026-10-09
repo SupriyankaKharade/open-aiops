@@ -8,6 +8,7 @@ and configures no exporters or global providers. With no SDK configured, all
 instrument recording operations safely operate as no-ops.
 """
 
+import builtins
 import math
 from typing import Optional, Union
 
@@ -23,6 +24,56 @@ ALLOWED_ATTRIBUTE_KEYS = frozenset({"provider", "model", "outcome", "error_type"
 
 # Bounded outcomes
 VALID_OUTCOMES = frozenset({"success", "error"})
+
+# Standard error categories and recognized exception names
+# Free-text error messages or raw credentials are strictly prohibited from metric labels.
+STANDARD_ERROR_CATEGORIES = frozenset({
+    # Common category slugs
+    "timeout",
+    "rate_limit",
+    "authentication",
+    "permission_denied",
+    "not_found",
+    "overloaded",
+    "service_unavailable",
+    "connection_error",
+    "bad_gateway",
+    "invalid_request",
+    "context_window_exceeded",
+    "content_filter",
+    "quota_exceeded",
+    "internal_error",
+    "unknown",
+    # Common domain/provider exception names
+    "RateLimitError",
+    "TimeoutError",
+    "AuthenticationError",
+    "PermissionDeniedError",
+    "NotFoundError",
+    "OverloadedError",
+    "ServiceUnavailableError",
+    "ConnectionError",
+    "BadGatewayError",
+    "InvalidRequestError",
+    "ContextWindowExceededError",
+    "ContentFilterError",
+    "QuotaExceeded",
+    "InternalServerError",
+    "APIError",
+    "APIConnectionError",
+    "APITimeoutError",
+    "APIStatusError",
+    "NoProviderAvailable",
+})
+
+_BUILTIN_EXCEPTION_NAMES = frozenset(
+    name
+    for name, obj in builtins.__dict__.items()
+    if isinstance(obj, type) and issubclass(obj, BaseException)
+)
+
+ALLOWED_ERROR_CATEGORIES = STANDARD_ERROR_CATEGORIES | _BUILTIN_EXCEPTION_NAMES
+_CATEGORY_LOOKUP = {c.lower(): c for c in ALLOWED_ERROR_CATEGORIES}
 
 
 def get_meter(name: Optional[str] = None) -> metrics.Meter:
@@ -89,9 +140,9 @@ class MetricsRecorder:
         if not isinstance(duration, (int, float)):
             raise ValueError(f"Duration must be a numeric value in seconds, got {type(duration).__name__}")
         if math.isnan(duration) or math.isinf(duration):
-            raise ValueError(f"Duration must be a finite number of seconds, got {duration}")
+            raise ValueError("Duration must be a finite number of seconds")
         if duration < 0:
-            raise ValueError(f"Duration cannot be negative, got {duration}")
+            raise ValueError("Duration cannot be negative")
         return float(duration)
 
     def _validate_outcome(self, outcome: str) -> str:
@@ -113,24 +164,26 @@ class MetricsRecorder:
             normalized = "error"
         if normalized not in VALID_OUTCOMES:
             raise ValueError(
-                f"Invalid outcome '{outcome}'. Must be one of {sorted(VALID_OUTCOMES)}"
+                f"Invalid outcome. Must be one of {sorted(VALID_OUTCOMES)}"
             )
         return normalized
 
     def _normalize_error_type(self, error_type: Union[str, type, BaseException]) -> str:
-        """Normalize error_type to a stable category identifier.
+        """Normalize error_type to a stable low-cardinality category identifier.
 
-        Extracts class name if an exception class or instance is provided,
-        and sanitizes against raw exception messages or free-form text.
+        Extracts class name if an exception class or instance is provided.
+        String inputs are strictly validated against an allowlist of supported
+        low-cardinality categories to prevent arbitrary free-text or sensitive
+        values from becoming metric attributes.
 
         Args:
-            error_type: Stable category string, exception class, or exception instance.
+            error_type: Recognized category string, exception class, or exception instance.
 
         Returns:
             Sanitized error type string identifier.
 
         Raises:
-            ValueError: If error_type cannot be resolved to a non-empty string.
+            ValueError: If error_type is empty, unsupported, or not a recognized category.
         """
         if isinstance(error_type, BaseException):
             return type(error_type).__name__
@@ -140,11 +193,16 @@ class MetricsRecorder:
             cleaned = error_type.strip()
             if not cleaned:
                 raise ValueError("error_type must be a non-empty string or exception")
-            # If a free-text message with newlines was accidentally passed, use first token or sanitize
-            if "\n" in cleaned or len(cleaned) > 100:
-                # Fall back to first token or generic error
-                cleaned = cleaned.split()[0][:50]
-            return cleaned
+            if cleaned in ALLOWED_ERROR_CATEGORIES:
+                return cleaned
+            cleaned_lower = cleaned.lower()
+            if cleaned_lower in _CATEGORY_LOOKUP:
+                return _CATEGORY_LOOKUP[cleaned_lower]
+            # Deliberately do not echo the raw error_type in the exception message
+            # to prevent potential credential or PII leaks in exception traces/logs.
+            raise ValueError(
+                "Invalid error_type: must be a recognized low-cardinality category or Exception subclass"
+            )
         raise ValueError(f"Unsupported error_type type: {type(error_type).__name__}")
 
     def record_request_duration(
