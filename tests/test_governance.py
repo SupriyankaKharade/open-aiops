@@ -4,6 +4,7 @@ from open_aiops.governance.router import (
     ModelRouter,
     NoProviderAvailable,
     ProviderConfig,
+    RejectionReason,
     RouteRequest,
     estimate_cost,
 )
@@ -84,6 +85,23 @@ def test_ties_break_on_latency_then_list_order():
         ]
     )
     assert router.route(REQUEST).name == "b"
+
+
+def test_decide_ranks_all_eligible_providers_best_first(router):
+    decision = router.decide(REQUEST)
+    assert [p.name for p in decision.ranked] == ["local", "primary", "secondary"]
+    assert decision.rejected == {}
+
+
+def test_decide_records_one_rejection_reason_per_provider(router):
+    router.mark_overloaded("primary")
+    decision = router.decide(REQUEST.model_copy(update={"max_latency_ms": 1000, "max_cost": 3}))
+    assert decision.ranked == []
+    assert decision.rejected == {
+        "primary": RejectionReason.OVERLOADED,
+        "secondary": RejectionReason.COST,
+        "local": RejectionReason.LATENCY,
+    }
 
 
 def test_rejects_empty_and_duplicate_providers():
