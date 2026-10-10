@@ -11,12 +11,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from open_aiops.governance.router import (
-    ModelRouter,
-    NoProviderAvailable,
-    ProviderConfig,
-    RouteRequest,
-)
+from open_aiops.core.config import ProviderConfig
+from open_aiops.governance.router import ModelRouter, NoProviderAvailable, RouteRequest
 
 T = TypeVar("T")
 
