@@ -7,12 +7,8 @@ from open_aiops.governance.fallbacks import (
     RateLimitError,
     call_with_failover,
 )
-from open_aiops.governance.router import (
-    ModelRouter,
-    NoProviderAvailable,
-    ProviderConfig,
-    RouteRequest,
-)
+from open_aiops.core.config import ProviderConfig
+from open_aiops.governance.router import ModelRouter, NoProviderAvailable, RouteRequest
 
 REQUEST = RouteRequest(input_tokens=100, max_output_tokens=100)
 
