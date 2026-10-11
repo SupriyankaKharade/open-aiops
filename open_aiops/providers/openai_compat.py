@@ -5,10 +5,17 @@ dispatches asynchronous HTTP requests, and normalizes wire responses into standa
 ProviderResponse objects.
 """
 
+import time
 from typing import Any
+import httpx
 from pydantic import SecretStr
 
-from open_aiops.providers.base import ProviderRequest
+from open_aiops.providers.base import (
+    Provider,
+    ProviderRequest,
+    ProviderResponse,
+    Usage,
+)
 
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -59,3 +66,95 @@ def build_chat_payload(request: ProviderRequest) -> dict[str, Any]:
         payload.update(request.extra_params)
 
     return payload
+
+
+def parse_chat_response(
+    data: dict[str, Any],
+    latency: float | None = None,
+    fallback_model: str = "",
+) -> ProviderResponse:
+    """Map raw OpenAI wire completion response to standard ProviderResponse."""
+    choices = data.get("choices", [])
+    text = ""
+    if choices and isinstance(choices, list):
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            msg = first_choice.get("message", {})
+            text = msg.get("content") or ""
+
+    model = data.get("model") or fallback_model
+
+    usage: Usage | None = None
+    wire_usage = data.get("usage")
+    if isinstance(wire_usage, dict):
+        usage = Usage(
+            input_tokens=wire_usage.get("prompt_tokens"),
+            output_tokens=wire_usage.get("completion_tokens"),
+        )
+
+    return ProviderResponse(
+        text=text,
+        model=model,
+        usage=usage,
+        latency=latency,
+        raw_response=data,
+    )
+
+
+class OpenAICompatAdapter:
+    """Async adapter connecting to any OpenAI-compatible chat completions endpoint.
+
+    Supports OpenAI, Ollama, Groq, vLLM, and other compliant inference servers.
+    Conforms to the Provider protocol (§3.3).
+    """
+
+    def __init__(
+        self,
+        name: str = "openai-compatible",
+        base_url: str | None = None,
+        api_key: SecretStr | str | None = None,
+        timeout_s: float = 30.0,
+        extra_headers: dict[str, str] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.name = name
+        self.endpoint_url = resolve_chat_url(base_url)
+        self.api_key = api_key if isinstance(api_key, SecretStr) else (SecretStr(api_key) if api_key else None)
+        self.timeout_s = timeout_s
+        self.extra_headers = extra_headers or {}
+        self._custom_client = client
+
+    def __repr__(self) -> str:
+        # Never leak api_key in string representation (Privacy by default)
+        return (
+            f"OpenAICompatAdapter(name={self.name!r}, "
+            f"endpoint_url={self.endpoint_url!r}, timeout_s={self.timeout_s})"
+        )
+
+    async def complete(self, request: ProviderRequest) -> ProviderResponse:
+        """Execute chat completion request asynchronously against the provider endpoint."""
+        payload = build_chat_payload(request)
+        headers = build_headers(self.api_key, self.extra_headers)
+
+        start_time = time.perf_counter()
+
+        if self._custom_client is not None:
+            response = await self._custom_client.post(
+                self.endpoint_url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout_s,
+            )
+        else:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    self.endpoint_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+
+        elapsed = time.perf_counter() - start_time
+        response_data = response.json()
+        return parse_chat_response(response_data, latency=elapsed, fallback_model=request.model)
+

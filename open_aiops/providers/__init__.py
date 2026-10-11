@@ -14,10 +14,18 @@ from open_aiops.providers.errors import (
     ProviderUnavailable,
     RateLimitError,
 )
+from open_aiops.providers.openai_compat import (
+    OpenAICompatAdapter,
+    build_chat_payload,
+    build_headers,
+    parse_chat_response,
+    resolve_chat_url,
+)
 
 __all__ = [
     "AuthError",
     "BadRequest",
+    "OpenAICompatAdapter",
     "Provider",
     "ProviderError",
     "ProviderRequest",
@@ -26,4 +34,8 @@ __all__ = [
     "ProviderUnavailable",
     "RateLimitError",
     "Usage",
+    "build_chat_payload",
+    "build_headers",
+    "parse_chat_response",
+    "resolve_chat_url",
 ]
