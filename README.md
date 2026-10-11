@@ -114,3 +114,14 @@ Run specific test modules:
 ```bash
 python -m pytest -q tests/test_config.py
 ```
+
+---
+
+## Running the End-to-End Demo
+
+Run the multi-agent routing, failover, and telemetry demonstration:
+
+```bash
+python examples/run_demo.py
+```
+
