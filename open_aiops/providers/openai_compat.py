@@ -16,6 +16,14 @@ from open_aiops.providers.base import (
     ProviderResponse,
     Usage,
 )
+from open_aiops.providers.errors import (
+    AuthError,
+    BadRequest,
+    ProviderError,
+    ProviderTimeout,
+    ProviderUnavailable,
+    RateLimitError,
+)
 
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -66,6 +74,58 @@ def build_chat_payload(request: ProviderRequest) -> dict[str, Any]:
         payload.update(request.extra_params)
 
     return payload
+
+
+def parse_retry_after(header_val: str | None) -> float | None:
+    """Parse HTTP Retry-After header value into delay in seconds."""
+    if not header_val:
+        return None
+    try:
+        return float(header_val.strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def translate_http_response(response: httpx.Response, provider_name: str) -> None:
+    """Check response status code and raise appropriate canonical ProviderError subclasses."""
+    code = response.status_code
+    if 200 <= code < 300:
+        return
+
+    if code == 429:
+        retry_after = parse_retry_after(response.headers.get("Retry-After"))
+        raise RateLimitError(
+            message=f"Rate limit exceeded (HTTP 429)",
+            retry_after_s=retry_after,
+            provider=provider_name,
+        )
+
+    if code in (401, 403):
+        raise AuthError(
+            message=f"Authentication or authorization failed (HTTP {code})",
+            provider=provider_name,
+            status_code=code,
+        )
+
+    if code in (400, 422):
+        raise BadRequest(
+            message=f"Bad request sent to provider (HTTP {code})",
+            provider=provider_name,
+            status_code=code,
+        )
+
+    if code >= 500:
+        raise ProviderUnavailable(
+            message=f"Provider server error (HTTP {code})",
+            provider=provider_name,
+            status_code=code,
+        )
+
+    raise ProviderError(
+        message=f"Provider returned error status (HTTP {code})",
+        provider=provider_name,
+        status_code=code,
+    )
 
 
 def parse_chat_response(
@@ -138,23 +198,42 @@ class OpenAICompatAdapter:
 
         start_time = time.perf_counter()
 
-        if self._custom_client is not None:
-            response = await self._custom_client.post(
-                self.endpoint_url,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout_s,
-            )
-        else:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+        try:
+            if self._custom_client is not None:
+                response = await self._custom_client.post(
                     self.endpoint_url,
                     json=payload,
                     headers=headers,
                     timeout=self.timeout_s,
                 )
+            else:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        self.endpoint_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=self.timeout_s,
+                    )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(
+                message=f"Request to {self.name} timed out after {self.timeout_s}s",
+                provider=self.name,
+            ) from exc
+        except (httpx.ConnectError, httpx.NetworkError) as exc:
+            raise ProviderUnavailable(
+                message=f"Failed to connect to {self.name} ({type(exc).__name__})",
+                provider=self.name,
+                status_code=503,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                message=f"HTTP communication error with {self.name} ({type(exc).__name__})",
+                provider=self.name,
+            ) from exc
 
         elapsed = time.perf_counter() - start_time
+        translate_http_response(response, self.name)
         response_data = response.json()
         return parse_chat_response(response_data, latency=elapsed, fallback_model=request.model)
+
 

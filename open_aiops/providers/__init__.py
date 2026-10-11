@@ -19,7 +19,9 @@ from open_aiops.providers.openai_compat import (
     build_chat_payload,
     build_headers,
     parse_chat_response,
+    parse_retry_after,
     resolve_chat_url,
+    translate_http_response,
 )
 
 __all__ = [
@@ -37,5 +39,7 @@ __all__ = [
     "build_chat_payload",
     "build_headers",
     "parse_chat_response",
+    "parse_retry_after",
     "resolve_chat_url",
+    "translate_http_response",
 ]
