@@ -175,7 +175,7 @@ def test_complete_429_rate_limit_error():
     err = exc_info.value
     assert err.status_code == 429
     assert err.retry_after_s == 45.0
-    assert err.retry_after == 45.0
+    assert not hasattr(err, "retry_after")
     assert err.retryable is True
     assert err.failover_eligible is True
     assert err.provider == "mock-groq"
