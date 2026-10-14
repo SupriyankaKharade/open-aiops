@@ -345,3 +345,107 @@ def test_failover_integration_with_adapter():
     assert result.text == "Fallback served successfully!"
     assert result.model == "backup-model"
     assert result.usage.total_tokens == 70
+
+
+def test_complete_dropped_connection_remote_protocol_error():
+    """Verify dropped connection (RemoteProtocolError) raises ProviderUnavailable with failover_eligible=True."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("Server disconnected abruptly", request=request)
+
+    client = make_mock_client(handler)
+    adapter = OpenAICompatAdapter(name="mock-dropped", client=client)
+    req = ProviderRequest(model="gpt-4o", messages=[{"role": "user", "content": "Hi"}])
+
+    with pytest.raises(ProviderUnavailable) as exc_info:
+        asyncio.run(adapter.complete(req))
+
+    err = exc_info.value
+    assert err.retryable is True
+    assert err.failover_eligible is True
+    assert err.status_code == 503
+    assert err.provider == "mock-dropped"
+
+
+def test_complete_invalid_json_body():
+    """Verify HTTP 200 with non-JSON body raises ProviderUnavailable with failover_eligible=True."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>502 Bad Gateway</body></html>")
+
+    client = make_mock_client(handler)
+    adapter = OpenAICompatAdapter(name="mock-html", client=client)
+    req = ProviderRequest(model="gpt-4o", messages=[{"role": "user", "content": "Hi"}])
+
+    with pytest.raises(ProviderUnavailable) as exc_info:
+        asyncio.run(adapter.complete(req))
+
+    err = exc_info.value
+    assert "Invalid JSON from provider" in err.message
+    assert err.retryable is True
+    assert err.failover_eligible is True
+    assert err.status_code == 200
+    assert err.provider == "mock-html"
+
+
+def test_complete_unexpected_response_shape():
+    """Verify HTTP 200 with non-dict JSON body raises ProviderUnavailable with failover_eligible=True."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["unexpected", "array", "shape"])
+
+    client = make_mock_client(handler)
+    adapter = OpenAICompatAdapter(name="mock-array", client=client)
+    req = ProviderRequest(model="gpt-4o", messages=[{"role": "user", "content": "Hi"}])
+
+    with pytest.raises(ProviderUnavailable) as exc_info:
+        asyncio.run(adapter.complete(req))
+
+    err = exc_info.value
+    assert "Unexpected response shape" in err.message
+    assert err.retryable is True
+    assert err.failover_eligible is True
+    assert err.status_code == 200
+    assert err.provider == "mock-array"
+
+
+def test_failover_integration_on_dropped_connection_and_invalid_json():
+    """Verify failover triggers on dropped connections and non-JSON 200 responses."""
+    def handler_drop(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("Connection terminated abruptly", request=request)
+
+    def handler_non_json(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<!DOCTYPE html><html>Gateway Error</html>")
+
+    def handler_healthy(request: httpx.Request) -> httpx.Response:
+        data = {
+            "model": "healthy-model",
+            "choices": [{"message": {"content": "Recovered successfully!"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        return httpx.Response(200, json=data)
+
+    client_drop = make_mock_client(handler_drop)
+    client_non_json = make_mock_client(handler_non_json)
+    client_healthy = make_mock_client(handler_healthy)
+
+    adapters = {
+        "p1": OpenAICompatAdapter(name="p1", client=client_drop),
+        "p2": OpenAICompatAdapter(name="p2", client=client_non_json),
+        "p3": OpenAICompatAdapter(name="p3", client=client_healthy),
+    }
+
+    configs = [
+        ProviderConfig(name="p1", model="m1", cost_per_1k_input_tokens=0.01, cost_per_1k_output_tokens=0.01, expected_latency_ms=100.0),
+        ProviderConfig(name="p2", model="m2", cost_per_1k_input_tokens=0.02, cost_per_1k_output_tokens=0.02, expected_latency_ms=200.0),
+        ProviderConfig(name="p3", model="m3", cost_per_1k_input_tokens=0.03, cost_per_1k_output_tokens=0.03, expected_latency_ms=300.0),
+    ]
+
+    router = ModelRouter(configs)
+    route_req = RouteRequest(input_tokens=10, max_output_tokens=5)
+    provider_req = ProviderRequest(model="m1", messages=[{"role": "user", "content": "hi"}])
+
+    async def _execute(p: ProviderConfig):
+        return await adapters[p.name].complete(provider_req)
+
+    result = asyncio.run(call_with_failover(router, route_req, _execute))
+    assert result.text == "Recovered successfully!"
+    assert result.model == "healthy-model"
+

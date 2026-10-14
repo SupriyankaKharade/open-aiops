@@ -219,9 +219,9 @@ class OpenAICompatAdapter:
                 message=f"Request to {self.name} timed out after {self.timeout_s}s",
                 provider=self.name,
             ) from exc
-        except (httpx.ConnectError, httpx.NetworkError) as exc:
+        except httpx.TransportError as exc:
             raise ProviderUnavailable(
-                message=f"Failed to connect to {self.name} ({type(exc).__name__})",
+                message=f"Failed to communicate with {self.name} ({type(exc).__name__})",
                 provider=self.name,
                 status_code=503,
             ) from exc
@@ -233,7 +233,23 @@ class OpenAICompatAdapter:
 
         elapsed = time.perf_counter() - start_time
         translate_http_response(response, self.name)
-        response_data = response.json()
+
+        try:
+            response_data = response.json()
+        except ValueError as exc:
+            raise ProviderUnavailable(
+                message="Invalid JSON from provider",
+                provider=self.name,
+                status_code=response.status_code,
+            ) from exc
+
+        if not isinstance(response_data, dict):
+            raise ProviderUnavailable(
+                message="Unexpected response shape",
+                provider=self.name,
+                status_code=response.status_code,
+            )
+
         return parse_chat_response(response_data, latency=elapsed, fallback_model=request.model)
 
 
