@@ -105,7 +105,7 @@ def test_successful_request_and_attempt_lifecycle(tracer_and_subscriber):
             output_tokens=45,
             cost=0.0025,
         ),
-        RequestCompleted(request_id=req_id, latency_s=0.90, cost=0.0025),
+        RequestCompleted(request_id=req_id, latency_s=0.90, total_cost=0.0025),
     ]
 
     assert_well_formed(events)
@@ -178,6 +178,8 @@ def test_failover_multi_attempt_flow(tracer_and_subscriber):
             provider="openai",
             model="gpt-4o",
             error_type="RateLimitError",
+            retryable=True,
+            failover_eligible=True,
         ),
         FallbackTriggered(
             request_id=req_id,
@@ -204,7 +206,7 @@ def test_failover_multi_attempt_flow(tracer_and_subscriber):
             output_tokens=30,
             cost=0.0018,
         ),
-        RequestCompleted(request_id=req_id, latency_s=1.20, cost=0.0018),
+        RequestCompleted(request_id=req_id, latency_s=1.20, total_cost=0.0018),
     ]
 
     assert_well_formed(events)
@@ -265,6 +267,8 @@ def test_retry_event_recording_lands_on_request_span(tracer_and_subscriber):
             provider="openai",
             model="gpt-4o",
             error_type="ProviderTimeout",
+            retryable=True,
+            failover_eligible=True,
         ),
         RetryScheduled(
             request_id=req_id,
@@ -350,7 +354,7 @@ def test_streaming_lifecycle(tracer_and_subscriber):
             output_tokens=150,
             cost=0.0035,
         ),
-        RequestCompleted(request_id=req_id, latency_s=1.25, cost=0.0035),
+        RequestCompleted(request_id=req_id, latency_s=1.25, total_cost=0.0035),
     ]
 
     assert_well_formed(events)

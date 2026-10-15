@@ -371,13 +371,15 @@ class TracingSubscriber:
             return
 
         span.set_attribute(ATTR_OPENAIOPS_LATENCY_S, float(event.latency_s))
-        if event.cost is not None:
-            span.set_attribute(ATTR_OPENAIOPS_COST_TOTAL, float(event.cost))
+        cost_val = getattr(event, "total_cost", getattr(event, "cost", None))
+        if cost_val is not None:
+            span.set_attribute(ATTR_OPENAIOPS_COST_TOTAL, float(cost_val))
         if getattr(event, "cost_status", None) is not None:
             span.set_attribute(ATTR_OPENAIOPS_COST_STATUS, str(event.cost_status))
 
         span.set_status(StatusCode.OK)
         span.end()
+
 
     def _on_request_failed(self, event: LifecycleEvent) -> None:
         span = self._registry.pop_request_span(event.request_id)
