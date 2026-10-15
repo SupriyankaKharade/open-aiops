@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 import httpx
 import pytest
 from pydantic import SecretStr
@@ -87,6 +89,29 @@ def test_parse_retry_after():
     assert parse_retry_after("15.5") == 15.5
     assert parse_retry_after(None) is None
     assert parse_retry_after("invalid-date-or-string") is None
+
+
+def test_parse_retry_after_rejects_negative_and_non_finite():
+    """Verify parse_retry_after rejects negative and non-finite values."""
+    assert parse_retry_after("-10") is None
+    assert parse_retry_after("-0.1") is None
+    assert parse_retry_after("inf") is None
+    assert parse_retry_after("-inf") is None
+    assert parse_retry_after("nan") is None
+    assert parse_retry_after("0") == 0.0
+
+
+def test_build_chat_payload_ignores_stream_param():
+    """Verify stream parameter in extra_params is ignored for non-streaming completions."""
+    req = ProviderRequest(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello"}],
+        extra_params={"stream": True, "top_p": 0.95},
+    )
+    payload = build_chat_payload(req)
+    assert "stream" not in payload
+    assert payload["top_p"] == 0.95
+
 
 
 def test_parse_chat_response_wire_mapping():
@@ -448,4 +473,70 @@ def test_failover_integration_on_dropped_connection_and_invalid_json():
     result = asyncio.run(call_with_failover(router, route_req, _execute))
     assert result.text == "Recovered successfully!"
     assert result.model == "healthy-model"
+
+
+# ---------------------------------------------------------------------------
+# Client Lifecycle, Connection Reuse & Subprocess Isolation Tests
+# ---------------------------------------------------------------------------
+
+
+def test_client_lazy_instantiation_reuse_and_aclose():
+    """Verify client is created lazily, reused across calls, and closed cleanly."""
+    adapter = OpenAICompatAdapter(name="lazy-client-test")
+    assert adapter._client is None
+    assert adapter._owns_client is True
+
+    client_1 = adapter._get_client()
+    assert isinstance(client_1, httpx.AsyncClient)
+    assert not client_1.is_closed
+
+    client_2 = adapter._get_client()
+    assert client_1 is client_2
+
+    asyncio.run(adapter.aclose())
+    assert client_1.is_closed
+    assert adapter._client is None
+
+    # Idempotent close
+    asyncio.run(adapter.aclose())
+
+
+def test_client_external_not_closed_by_adapter_aclose():
+    """Verify externally provided client is not closed when adapter.aclose is called."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": "ok"}}]})
+
+    ext_client = make_mock_client(handler)
+    adapter = OpenAICompatAdapter(name="external-client-test", client=ext_client)
+    assert adapter._owns_client is False
+    assert adapter._client is ext_client
+
+    asyncio.run(adapter.aclose())
+    assert not ext_client.is_closed
+    asyncio.run(ext_client.aclose())
+
+
+def test_adapter_async_context_manager():
+    """Verify OpenAICompatAdapter can be used as an async context manager."""
+    async def _run():
+        async with OpenAICompatAdapter(name="ctx-test") as adapter:
+            client = adapter._get_client()
+            assert not client.is_closed
+            return client
+
+    client = asyncio.run(_run())
+    assert client.is_closed
+
+
+def test_import_fallbacks_and_providers_does_not_load_httpx():
+    """Verify importing governance fallbacks or providers root does not load httpx."""
+    cmd = [
+        sys.executable,
+        "-c",
+        "import sys, open_aiops.governance.fallbacks, open_aiops.providers; "
+        "assert 'httpx' not in sys.modules, f'httpx was loaded: {sys.modules.get(\"httpx\")}'",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+
 

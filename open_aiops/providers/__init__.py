@@ -1,4 +1,4 @@
-"""Provider contract, adapters, and canonical error types."""
+"""Provider contract and canonical error types."""
 
 from open_aiops.providers.base import (
     Provider,
@@ -14,20 +14,10 @@ from open_aiops.providers.errors import (
     ProviderUnavailable,
     RateLimitError,
 )
-from open_aiops.providers.openai_compat import (
-    OpenAICompatAdapter,
-    build_chat_payload,
-    build_headers,
-    parse_chat_response,
-    parse_retry_after,
-    resolve_chat_url,
-    translate_http_response,
-)
 
 __all__ = [
     "AuthError",
     "BadRequest",
-    "OpenAICompatAdapter",
     "Provider",
     "ProviderError",
     "ProviderRequest",
@@ -36,10 +26,5 @@ __all__ = [
     "ProviderUnavailable",
     "RateLimitError",
     "Usage",
-    "build_chat_payload",
-    "build_headers",
-    "parse_chat_response",
-    "parse_retry_after",
-    "resolve_chat_url",
-    "translate_http_response",
 ]
+

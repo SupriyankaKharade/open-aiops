@@ -5,6 +5,7 @@ dispatches asynchronous HTTP requests, and normalizes wire responses into standa
 ProviderResponse objects.
 """
 
+import math
 import time
 from typing import Any
 import httpx
@@ -71,7 +72,9 @@ def build_chat_payload(request: ProviderRequest) -> dict[str, Any]:
         payload["temperature"] = request.temperature
 
     if request.extra_params:
-        payload.update(request.extra_params)
+        # Ignore streaming parameter as complete() handles standard non-streaming requests
+        extra = {k: v for k, v in request.extra_params.items() if k != "stream"}
+        payload.update(extra)
 
     return payload
 
@@ -81,7 +84,10 @@ def parse_retry_after(header_val: str | None) -> float | None:
     if not header_val:
         return None
     try:
-        return float(header_val.strip())
+        val = float(header_val.strip())
+        if val < 0 or not math.isfinite(val):
+            return None
+        return val
     except (ValueError, TypeError):
         return None
 
@@ -183,6 +189,8 @@ class OpenAICompatAdapter:
         self.timeout_s = timeout_s
         self.extra_headers = extra_headers or {}
         self._custom_client = client
+        self._client: httpx.AsyncClient | None = client
+        self._owns_client: bool = client is None
 
     def __repr__(self) -> str:
         # Never leak api_key in string representation (Privacy by default)
@@ -191,29 +199,40 @@ class OpenAICompatAdapter:
             f"endpoint_url={self.endpoint_url!r}, timeout_s={self.timeout_s})"
         )
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """Lazily initialize and return the reusable HTTP client."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+            self._owns_client = True
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client if it was created by this adapter."""
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> "OpenAICompatAdapter":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        await self.aclose()
+
     async def complete(self, request: ProviderRequest) -> ProviderResponse:
         """Execute chat completion request asynchronously against the provider endpoint."""
         payload = build_chat_payload(request)
         headers = build_headers(self.api_key, self.extra_headers)
 
         start_time = time.perf_counter()
+        client = self._get_client()
 
         try:
-            if self._custom_client is not None:
-                response = await self._custom_client.post(
-                    self.endpoint_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=self.timeout_s,
-                )
-            else:
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        self.endpoint_url,
-                        json=payload,
-                        headers=headers,
-                        timeout=self.timeout_s,
-                    )
+            response = await client.post(
+                self.endpoint_url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout_s,
+            )
         except httpx.TimeoutException as exc:
             raise ProviderTimeout(
                 message=f"Request to {self.name} timed out after {self.timeout_s}s",
@@ -251,5 +270,6 @@ class OpenAICompatAdapter:
             )
 
         return parse_chat_response(response_data, latency=elapsed, fallback_model=request.model)
+
 
 
