@@ -1,4 +1,4 @@
-"""Provider contract, adapters, and canonical error types."""
+"""Provider contract and canonical error types."""
 
 from open_aiops.providers.base import (
     Provider,
@@ -27,3 +27,4 @@ __all__ = [
     "RateLimitError",
     "Usage",
 ]
+
