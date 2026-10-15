@@ -11,6 +11,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from open_aiops.core.config import ProviderConfig
+from open_aiops.governance.circuit_breaker import CircuitBreakerRegistry
 
 
 class RouteRequest(BaseModel):
@@ -22,6 +23,7 @@ class RouteRequest(BaseModel):
 
 class RejectionReason(str, Enum):
     OVERLOADED = "overloaded"
+    CIRCUIT_OPEN = "circuit_open"
     LATENCY = "latency"
     COST = "cost"
 
@@ -44,7 +46,12 @@ def estimate_cost(provider: ProviderConfig, request: RouteRequest) -> float:
 
 
 class ModelRouter:
-    def __init__(self, providers: Iterable[ProviderConfig]):
+    def __init__(
+        self,
+        providers: Iterable[ProviderConfig],
+        *,
+        circuit_breakers: CircuitBreakerRegistry | None = None,
+    ):
         self._providers = list(providers)
         names = [p.name for p in self._providers]
         if not names:
@@ -52,6 +59,7 @@ class ModelRouter:
         if len(names) != len(set(names)):
             raise ValueError(f"Duplicate provider names: {names}")
         self._overloaded: set[str] = set()
+        self._circuit_breakers = circuit_breakers
 
     def mark_overloaded(self, name: str) -> None:
         self._check_known(name)
@@ -88,6 +96,10 @@ class ModelRouter:
     def _rejection_reason(self, provider: ProviderConfig, request: RouteRequest) -> RejectionReason | None:
         if provider.name in self._overloaded:
             return RejectionReason.OVERLOADED
+        if self._circuit_breakers is not None and self._circuit_breakers.is_excluded_from_routing(
+            provider.name
+        ):
+            return RejectionReason.CIRCUIT_OPEN
         if request.max_latency_ms is not None and provider.expected_latency_ms > request.max_latency_ms:
             return RejectionReason.LATENCY
         if request.max_cost is not None and estimate_cost(provider, request) > request.max_cost:
