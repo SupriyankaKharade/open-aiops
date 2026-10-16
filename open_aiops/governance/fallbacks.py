@@ -11,31 +11,39 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from open_aiops.governance.router import (
-    ModelRouter,
-    NoProviderAvailable,
-    ProviderConfig,
-    RouteRequest,
-)
+from open_aiops.core.config import ProviderConfig
+from open_aiops.governance.router import ModelRouter, NoProviderAvailable, RouteRequest
 
 T = TypeVar("T")
 
 
-class RateLimitError(Exception):
-    """Raised by a provider call when the provider answers HTTP 429."""
+from open_aiops.providers.errors import (
+    ProviderTimeout,
+    ProviderUnavailable,
+    RateLimitError,
+)
 
-    def __init__(self, retry_after: float | None = None):
-        super().__init__("rate limited")
-        self.retry_after = retry_after
-
-
-# asyncio.TimeoutError is only an alias of TimeoutError from Python 3.11.
+# Kept for backward compatibility
 FAILOVER_ERRORS: tuple[type[BaseException], ...] = (
     RateLimitError,
+    ProviderTimeout,
+    ProviderUnavailable,
     TimeoutError,
     asyncio.TimeoutError,
     ConnectionError,
 )
+
+
+def is_failover_eligible(exc: BaseException) -> bool:
+    """Determine whether an exception qualifies for automatic failover.
+
+    Decides based on the exception's explicit `failover_eligible` flag if present.
+    Standard network/timeout exceptions from the standard library qualify by default.
+    """
+    eligible = getattr(exc, "failover_eligible", None)
+    if eligible is not None:
+        return bool(eligible)
+    return isinstance(exc, (TimeoutError, ConnectionError))
 
 
 class AllProvidersFailed(NoProviderAvailable):
@@ -61,6 +69,9 @@ async def call_with_failover(
     for provider in decision.ranked:
         try:
             return await call(provider)
-        except FAILOVER_ERRORS as exc:
-            attempts.append((provider.name, type(exc).__name__))
+        except Exception as exc:
+            if is_failover_eligible(exc):
+                attempts.append((provider.name, type(exc).__name__))
+            else:
+                raise
     raise AllProvidersFailed(attempts)

@@ -10,13 +10,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-
-class ProviderConfig(BaseModel):
-    name: str
-    model: str
-    cost_per_1k_input_tokens: float = Field(ge=0)
-    cost_per_1k_output_tokens: float = Field(ge=0)
-    expected_latency_ms: float = Field(gt=0)
+from open_aiops.core.config import ProviderConfig
 
 
 class RouteRequest(BaseModel):

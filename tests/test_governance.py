@@ -1,9 +1,9 @@
 import pytest
 
+from open_aiops.core.config import ProviderConfig
 from open_aiops.governance.router import (
     ModelRouter,
     NoProviderAvailable,
-    ProviderConfig,
     RejectionReason,
     RouteRequest,
     estimate_cost,
@@ -85,6 +85,22 @@ def test_ties_break_on_latency_then_list_order():
         ]
     )
     assert router.route(REQUEST).name == "b"
+
+
+def test_router_uses_provider_config_from_core_config():
+    """INT-12: single ProviderConfig lives in core.config."""
+    from open_aiops.core import config as core_config
+    from open_aiops.governance import router as governance_router
+
+    assert governance_router.ProviderConfig is core_config.ProviderConfig
+    p = core_config.ProviderConfig(
+        name="azure",
+        model="gpt-4o",
+        cost_per_1k_input_tokens=1.0,
+        cost_per_1k_output_tokens=1.0,
+        expected_latency_ms=200,
+    )
+    assert ModelRouter([p]).route(REQUEST).name == "azure"
 
 
 def test_decide_ranks_all_eligible_providers_best_first(router):

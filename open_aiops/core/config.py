@@ -6,6 +6,8 @@ pydantic-settings, providing typed models, defaults, and validation.
 
 from functools import lru_cache
 
+from typing import Optional
+
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,11 +32,16 @@ class ProviderConfig(BaseModel):
     expected_latency_ms: float = Field(
         ..., gt=0, description="Expected response latency in milliseconds"
     )
+    vendor: Optional[str] = Field(
+        default=None, description="Optional vendor identifier"
+    )
 
-    @field_validator("name", "model")
+    @field_validator("name", "model", "vendor")
     @classmethod
-    def validate_non_empty(cls, v: str) -> str:
+    def validate_non_empty(cls, v: Optional[str]) -> Optional[str]:
         """Ensure provider string identifiers are non-empty after stripping whitespace."""
+        if v is None:
+            return None
         if not v or not v.strip():
             raise ValueError("Field cannot be empty or whitespace only")
         return v.strip()
@@ -78,6 +85,25 @@ class Settings(BaseSettings):
                 f"Invalid log_level '{v}'. Must be one of {sorted(VALID_LOG_LEVELS)}"
             )
         return upper_v
+
+    @field_validator("providers")
+    @classmethod
+    def validate_unique_provider_names(
+        cls, v: list[ProviderConfig]
+    ) -> list[ProviderConfig]:
+        """Ensure all configured providers have unique names."""
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for p in v:
+            name = p.name.strip() if isinstance(p.name, str) else str(p.name)
+            if name in seen:
+                duplicates.add(name)
+            seen.add(name)
+        if duplicates:
+            raise ValueError(
+                f"Duplicate provider names detected: {sorted(duplicates)}"
+            )
+        return v
 
 
 @lru_cache

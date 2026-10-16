@@ -7,12 +7,8 @@ from open_aiops.governance.fallbacks import (
     RateLimitError,
     call_with_failover,
 )
-from open_aiops.governance.router import (
-    ModelRouter,
-    NoProviderAvailable,
-    ProviderConfig,
-    RouteRequest,
-)
+from open_aiops.core.config import ProviderConfig
+from open_aiops.governance.router import ModelRouter, NoProviderAvailable, RouteRequest
 
 REQUEST = RouteRequest(input_tokens=100, max_output_tokens=100)
 
@@ -57,9 +53,32 @@ def test_primary_success_makes_one_call(router):
 
 
 def test_rate_limited_primary_fails_over_to_backup(router):
-    call, calls = scripted({"primary": RateLimitError(retry_after=30), "backup": "from backup"})
+    call, calls = scripted({"primary": RateLimitError(retry_after_s=30), "backup": "from backup"})
     assert run(router, call) == "from backup"
     assert calls == ["primary", "backup"]
+
+
+def test_custom_exception_with_failover_eligible_flag_fails_over(router):
+    """Verify call_with_failover decides from the failover_eligible flag, not a fixed tuple."""
+    class CustomEligibleError(Exception):
+        failover_eligible = True
+
+    class CustomIneligibleError(Exception):
+        failover_eligible = False
+
+    # Custom exception with failover_eligible = True succeeds on backup
+    call, calls = scripted({"primary": CustomEligibleError("transient issue"), "backup": "ok"})
+    assert run(router, call) == "ok"
+    assert calls == ["primary", "backup"]
+
+    # Custom exception with failover_eligible = False halts immediately
+    call_ineligible, calls_ineligible = scripted({
+        "primary": CustomIneligibleError("permanent issue"),
+        "backup": "ok",
+    })
+    with pytest.raises(CustomIneligibleError):
+        run(router, call_ineligible)
+    assert calls_ineligible == ["primary"]
 
 
 @pytest.mark.parametrize("error", [TimeoutError(), asyncio.TimeoutError(), ConnectionResetError()])
