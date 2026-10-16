@@ -432,7 +432,7 @@ def test_only_permitted_attribute_keys_emitted(isolated_meter_setup):
             assert keys.issubset(ALLOWED_ATTRIBUTE_KEYS), f"Unpermitted attributes found: {keys}"
 
 
-def test_instrument_unexpected_raise_handled_safely(isolated_meter_setup):
+def test_instrument_unexpected_raise_handled_safely(isolated_meter_setup, caplog):
     """Underlying instrument failures are handled defensively and never escape to caller."""
     _, recorder = isolated_meter_setup
 
@@ -442,23 +442,54 @@ def test_instrument_unexpected_raise_handled_safely(isolated_meter_setup):
 
     recorder.duration_histogram.record = broken_record
 
-    # record_request_duration must not raise
+    with caplog.at_level("DEBUG"):
+        # record_request_duration must not raise
+        recorder.record_request_duration(
+            provider="openai", model="gpt-4o", duration=1.0, outcome="success"
+        )
+
+        # In record_request, failing histogram should not break request count recording
+        recorder.record_request(
+            provider="openai", model="gpt-4o", duration=1.0, outcome="success"
+        )
+
+        # Monkeypatch counters to raise as well
+        def broken_add(*args, **kwargs):
+            raise RuntimeError("Underlying counter storage failure")
+
+        recorder.requests_counter.add = broken_add
+        recorder.record_request_count(provider="openai", model="gpt-4o", outcome="success")
+        recorder.record_request(provider="openai", model="gpt-4o", duration=1.0, outcome="success")
+
+        recorder.errors_counter.add = broken_add
+        recorder.record_error(provider="openai", model="gpt-4o", error_type="RateLimitError")
+
+    # Debug log should capture the exception class name only, never message or sensitive payload
+    assert "RuntimeError" in caplog.text
+    assert "Underlying histogram hardware failure" not in caplog.text
+    assert "Underlying counter storage failure" not in caplog.text
+
+
+def test_logging_failure_never_escapes(isolated_meter_setup, monkeypatch):
+    """Even if logging itself encounters an error, recorder methods never raise."""
+    _, recorder = isolated_meter_setup
+
+    def broken_record(*args, **kwargs):
+        raise RuntimeError("simulated error")
+
+    def broken_debug(*args, **kwargs):
+        raise OSError("simulated logging failure")
+
+    recorder.duration_histogram.record = broken_record
+    monkeypatch.setattr("open_aiops.observability.metrics.logger.debug", broken_debug)
+
+    # Must execute safely without raising
     recorder.record_request_duration(
         provider="openai", model="gpt-4o", duration=1.0, outcome="success"
     )
-
-    # In record_request, failing histogram should not break request count recording
-    recorder.record_request(
-        provider="openai", model="gpt-4o", duration=1.0, outcome="success"
+    recorder.record_request_count(
+        provider="openai", model="gpt-4o", outcome="success"
     )
-
-    # Monkeypatch counters to raise as well
-    def broken_add(*args, **kwargs):
-        raise RuntimeError("Underlying counter storage failure")
-
-    recorder.requests_counter.add = broken_add
-    recorder.record_request_count(provider="openai", model="gpt-4o", outcome="success")
-    recorder.record_request(provider="openai", model="gpt-4o", duration=1.0, outcome="success")
-
-    recorder.errors_counter.add = broken_add
-    recorder.record_error(provider="openai", model="gpt-4o", error_type="RateLimitError")
+    recorder.record_error(
+        provider="openai", model="gpt-4o", error_type="RateLimitError"
+    )

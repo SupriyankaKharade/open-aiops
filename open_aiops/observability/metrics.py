@@ -8,10 +8,13 @@ and configures no exporters or global providers. With no SDK configured, all
 instrument recording operations safely operate as no-ops.
 """
 
+import logging
 import math
 from typing import Optional, Sequence, Union
 
 from opentelemetry import metrics
+
+logger = logging.getLogger(__name__)
 
 # Instrument names
 INSTRUMENT_REQUEST_DURATION = "openaiops.request.duration"
@@ -27,6 +30,9 @@ VALID_OUTCOMES = frozenset({"success", "error", "cancelled"})
 # Canonical INT-10 provider error class names
 # The accepted error vocabulary consists strictly of these canonical names plus 'unknown'.
 # Free-text error messages or raw credentials are strictly prohibited from metric labels.
+# Error classes are recognized by class name (__name__) on purpose so that
+# metrics.py does not import provider implementations or create unnecessary
+# dependency coupling.
 CANONICAL_PROVIDER_ERRORS = frozenset({
     "ProviderError",
     "RateLimitError",
@@ -131,7 +137,13 @@ def _normalize_error_type(error_type: Union[str, type, BaseException, object]) -
             if cleaned in CANONICAL_PROVIDER_ERRORS or cleaned == "unknown":
                 return cleaned
             return "unknown"
-    except Exception:
+    except Exception as exc:
+        try:
+            logger.debug(
+                "Failed to normalize error_type: %s", type(exc).__name__
+            )
+        except Exception:
+            pass
         return "unknown"
     return "unknown"
 
@@ -236,8 +248,13 @@ class MetricsRecorder:
                 "outcome": valid_outcome,
             }
             self.duration_histogram.record(float(duration), attributes=attributes)
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.debug(
+                    "Failed to record request duration: %s", type(exc).__name__
+                )
+            except Exception:
+                pass
 
     def record_request_count(
         self,
@@ -268,8 +285,13 @@ class MetricsRecorder:
                 "outcome": valid_outcome,
             }
             self.requests_counter.add(1, attributes=attributes)
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.debug(
+                    "Failed to record request count: %s", type(exc).__name__
+                )
+            except Exception:
+                pass
 
     def record_request(
         self,
@@ -300,8 +322,13 @@ class MetricsRecorder:
             self.record_request_count(
                 provider=provider, model=model, outcome=outcome
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.debug(
+                    "Failed to record request: %s", type(exc).__name__
+                )
+            except Exception:
+                pass
 
     def record_error(
         self,
@@ -332,5 +359,10 @@ class MetricsRecorder:
                 "error_type": clean_error_type,
             }
             self.errors_counter.add(1, attributes=attributes)
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.debug(
+                    "Failed to record provider error: %s", type(exc).__name__
+                )
+            except Exception:
+                pass
