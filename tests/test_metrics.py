@@ -13,6 +13,11 @@ from open_aiops.observability.metrics import (
     INSTRUMENT_PROVIDER_ERRORS,
     INSTRUMENT_REQUEST_DURATION,
     INSTRUMENT_REQUESTS,
+    INSTRUMENT_RETRIES,
+    INSTRUMENT_FALLBACKS,
+    INSTRUMENT_TOKENS_INPUT,
+    INSTRUMENT_TOKENS_OUTPUT,
+    INSTRUMENT_COST,
     MetricsRecorder,
     VALID_OUTCOMES,
     get_meter,
@@ -493,3 +498,68 @@ def test_logging_failure_never_escapes(isolated_meter_setup, monkeypatch):
     recorder.record_error(
         provider="openai", model="gpt-4o", error_type="RateLimitError"
     )
+
+
+def test_retry_and_fallback_recording(isolated_meter_setup):
+    """Retries and fallbacks are recorded with provider attribution."""
+    reader, recorder = isolated_meter_setup
+
+    recorder.record_retry(provider="openai")
+    recorder.record_fallback(provider="openai")
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_RETRIES in metrics_map
+    assert INSTRUMENT_FALLBACKS in metrics_map
+
+    retry_points = list(metrics_map[INSTRUMENT_RETRIES].data.data_points)
+    assert len(retry_points) == 1
+    assert retry_points[0].attributes == {"provider": "openai"}
+    assert retry_points[0].value == 1
+
+    fallback_points = list(metrics_map[INSTRUMENT_FALLBACKS].data.data_points)
+    assert len(fallback_points) == 1
+    assert fallback_points[0].attributes == {"provider": "openai"}
+    assert fallback_points[0].value == 1
+
+
+def test_tokens_and_cost_recording(isolated_meter_setup):
+    """Token distributions and cost counter are recorded with provider and model attributes."""
+    reader, recorder = isolated_meter_setup
+
+    recorder.record_tokens(
+        provider="anthropic", model="claude-3-opus", input_tokens=150, output_tokens=75
+    )
+    recorder.record_cost(
+        provider="anthropic", model="claude-3-opus", cost=0.0045
+    )
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_TOKENS_INPUT in metrics_map
+    assert INSTRUMENT_TOKENS_OUTPUT in metrics_map
+    assert INSTRUMENT_COST in metrics_map
+
+    in_pts = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)
+    assert len(in_pts) == 1
+    assert in_pts[0].attributes == {"provider": "anthropic", "model": "claude-3-opus"}
+    assert in_pts[0].count == 1
+    assert in_pts[0].sum == 150
+
+    cost_pts = list(metrics_map[INSTRUMENT_COST].data.data_points)
+    assert len(cost_pts) == 1
+    assert cost_pts[0].attributes == {"provider": "anthropic", "model": "claude-3-opus"}
+    assert cost_pts[0].value == 0.0045
+
+
+def test_new_recording_methods_handle_invalid_inputs_safely(isolated_meter_setup):
+    """Invalid or negative inputs in new recording methods are handled defensively without raising."""
+    reader, recorder = isolated_meter_setup
+
+    # Blank / invalid identifiers
+    recorder.record_retry(provider="")
+    recorder.record_fallback(provider="   ")
+    recorder.record_tokens(provider="", model="m", input_tokens=-10, output_tokens=float("nan"))
+    recorder.record_cost(provider="p", model="", cost=-1.0)
+    recorder.record_cost(provider="p", model="m", cost=float("nan"))
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert len(metrics_map) == 0

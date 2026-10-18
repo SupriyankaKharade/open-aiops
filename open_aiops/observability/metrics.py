@@ -8,6 +8,7 @@ and configures no exporters or global providers. With no SDK configured, all
 instrument recording operations safely operate as no-ops.
 """
 
+from decimal import Decimal
 import logging
 import math
 from typing import Optional, Sequence, Union
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 INSTRUMENT_REQUEST_DURATION = "openaiops.request.duration"
 INSTRUMENT_REQUESTS = "openaiops.requests"
 INSTRUMENT_PROVIDER_ERRORS = "openaiops.provider.errors"
+INSTRUMENT_RETRIES = "openaiops.retries"
+INSTRUMENT_FALLBACKS = "openaiops.fallbacks"
+INSTRUMENT_TOKENS_INPUT = "openaiops.tokens.input"
+INSTRUMENT_TOKENS_OUTPUT = "openaiops.tokens.output"
+INSTRUMENT_COST = "openaiops.cost"
 
 # Permitted attribute keys (strictly enforced to avoid high cardinality or sensitive leaks)
 ALLOWED_ATTRIBUTE_KEYS = frozenset({"provider", "model", "outcome", "error_type"})
@@ -207,6 +213,31 @@ class MetricsRecorder:
             unit="{error}",
             description="Total count of provider errors",
         )
+        self.retries_counter = self._meter.create_counter(
+            name=INSTRUMENT_RETRIES,
+            unit="{retry}",
+            description="Total count of request retry attempts",
+        )
+        self.fallbacks_counter = self._meter.create_counter(
+            name=INSTRUMENT_FALLBACKS,
+            unit="{fallback}",
+            description="Total count of provider fallbacks triggered",
+        )
+        self.tokens_input_histogram = self._meter.create_histogram(
+            name=INSTRUMENT_TOKENS_INPUT,
+            unit="{token}",
+            description="Distribution of input prompt tokens per attempt",
+        )
+        self.tokens_output_histogram = self._meter.create_histogram(
+            name=INSTRUMENT_TOKENS_OUTPUT,
+            unit="{token}",
+            description="Distribution of output completion tokens per attempt",
+        )
+        self.cost_counter = self._meter.create_counter(
+            name=INSTRUMENT_COST,
+            unit="",
+            description="Total estimated cost of LLM operations",
+        )
 
     @property
     def meter(self) -> metrics.Meter:
@@ -364,5 +395,133 @@ class MetricsRecorder:
                 logger.debug(
                     "Failed to record provider error: %s", type(exc).__name__
                 )
+            except Exception:
+                pass
+
+    def record_retry(self, provider: str) -> None:
+        """Increment the retry counter for a provider.
+
+        Args:
+            provider: LLM provider name.
+        """
+        try:
+            provider_clean = _validate_identifier(provider)
+            if provider_clean is None:
+                return
+
+            attributes = {"provider": provider_clean}
+            self.retries_counter.add(1, attributes=attributes)
+        except Exception as exc:
+            try:
+                logger.debug("Failed to record retry: %s", type(exc).__name__)
+            except Exception:
+                pass
+
+    def record_fallback(self, provider: str) -> None:
+        """Increment the fallback counter for a failing provider.
+
+        Args:
+            provider: LLM provider name from which fallback was triggered.
+        """
+        try:
+            provider_clean = _validate_identifier(provider)
+            if provider_clean is None:
+                return
+
+            attributes = {"provider": provider_clean}
+            self.fallbacks_counter.add(1, attributes=attributes)
+        except Exception as exc:
+            try:
+                logger.debug("Failed to record fallback: %s", type(exc).__name__)
+            except Exception:
+                pass
+
+    def record_tokens(
+        self,
+        provider: str,
+        model: str,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+    ) -> None:
+        """Record input and output token distributions per attempt.
+
+        Args:
+            provider: LLM provider name.
+            model: Model identifier.
+            input_tokens: Optional count of input prompt tokens.
+            output_tokens: Optional count of output completion tokens.
+        """
+        try:
+            provider_clean = _validate_identifier(provider)
+            model_clean = _validate_identifier(model)
+            if provider_clean is None or model_clean is None:
+                return
+
+            attributes = {
+                "provider": provider_clean,
+                "model": model_clean,
+            }
+
+            if (
+                isinstance(input_tokens, (int, float))
+                and not isinstance(input_tokens, bool)
+                and not math.isnan(input_tokens)
+                and not math.isinf(input_tokens)
+                and input_tokens >= 0
+            ):
+                self.tokens_input_histogram.record(
+                    float(input_tokens), attributes=attributes
+                )
+
+            if (
+                isinstance(output_tokens, (int, float))
+                and not isinstance(output_tokens, bool)
+                and not math.isnan(output_tokens)
+                and not math.isinf(output_tokens)
+                and output_tokens >= 0
+            ):
+                self.tokens_output_histogram.record(
+                    float(output_tokens), attributes=attributes
+                )
+        except Exception as exc:
+            try:
+                logger.debug("Failed to record tokens: %s", type(exc).__name__)
+            except Exception:
+                pass
+
+    def record_cost(
+        self,
+        provider: str,
+        model: str,
+        cost: Union[Decimal, float, int],
+    ) -> None:
+        """Increment the total cost counter for a provider and model.
+
+        Args:
+            provider: LLM provider name.
+            model: Model identifier.
+            cost: Cost amount (Decimal, float, or int; must be finite and non-negative).
+        """
+        try:
+            provider_clean = _validate_identifier(provider)
+            model_clean = _validate_identifier(model)
+            if provider_clean is None or model_clean is None:
+                return
+
+            if cost is None or isinstance(cost, bool):
+                return
+
+            cost_float = float(cost)
+            if math.isnan(cost_float) or math.isinf(cost_float) or cost_float < 0:
+                return
+
+            attributes = {
+                "provider": provider_clean,
+                "model": model_clean,
+            }
+            self.cost_counter.add(cost_float, attributes=attributes)
+        except Exception as exc:
+            try:
+                logger.debug("Failed to record cost: %s", type(exc).__name__)
             except Exception:
                 pass
