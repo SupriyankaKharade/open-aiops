@@ -13,6 +13,11 @@ from open_aiops.observability.metrics import (
     INSTRUMENT_PROVIDER_ERRORS,
     INSTRUMENT_REQUEST_DURATION,
     INSTRUMENT_REQUESTS,
+    INSTRUMENT_RETRIES,
+    INSTRUMENT_FALLBACKS,
+    INSTRUMENT_TOKENS_INPUT,
+    INSTRUMENT_TOKENS_OUTPUT,
+    INSTRUMENT_COST,
     MetricsRecorder,
     VALID_OUTCOMES,
     get_meter,
@@ -493,3 +498,141 @@ def test_logging_failure_never_escapes(isolated_meter_setup, monkeypatch):
     recorder.record_error(
         provider="openai", model="gpt-4o", error_type="RateLimitError"
     )
+
+
+def test_retry_and_fallback_recording(isolated_meter_setup):
+    """Retries and fallbacks are recorded with provider attribution."""
+    reader, recorder = isolated_meter_setup
+
+    recorder.record_retry(provider="openai")
+    recorder.record_fallback(provider="openai")
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_RETRIES in metrics_map
+    assert INSTRUMENT_FALLBACKS in metrics_map
+
+    retry_points = list(metrics_map[INSTRUMENT_RETRIES].data.data_points)
+    assert len(retry_points) == 1
+    assert retry_points[0].attributes == {"provider": "openai"}
+    assert retry_points[0].value == 1
+
+    fallback_points = list(metrics_map[INSTRUMENT_FALLBACKS].data.data_points)
+    assert len(fallback_points) == 1
+    assert fallback_points[0].attributes == {"provider": "openai"}
+    assert fallback_points[0].value == 1
+
+
+def test_tokens_and_cost_recording(isolated_meter_setup):
+    """Token distributions and cost counter are recorded with provider and model attributes."""
+    reader, recorder = isolated_meter_setup
+
+    recorder.record_tokens(
+        provider="anthropic", model="claude-3-opus", input_tokens=150, output_tokens=75
+    )
+    recorder.record_cost(
+        provider="anthropic", model="claude-3-opus", cost=0.0045
+    )
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert INSTRUMENT_TOKENS_INPUT in metrics_map
+    assert INSTRUMENT_TOKENS_OUTPUT in metrics_map
+    assert INSTRUMENT_COST in metrics_map
+
+    in_pts = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)
+    assert len(in_pts) == 1
+    assert in_pts[0].attributes == {"provider": "anthropic", "model": "claude-3-opus"}
+    assert in_pts[0].count == 1
+    assert in_pts[0].sum == 150
+
+    cost_pts = list(metrics_map[INSTRUMENT_COST].data.data_points)
+    assert len(cost_pts) == 1
+    assert cost_pts[0].attributes == {"provider": "anthropic", "model": "claude-3-opus"}
+    assert cost_pts[0].value == 0.0045
+
+
+def test_new_recording_methods_handle_invalid_inputs_safely(isolated_meter_setup):
+    """Invalid or negative inputs in new recording methods are handled defensively without raising."""
+    reader, recorder = isolated_meter_setup
+
+    # Blank / invalid identifiers
+    recorder.record_retry(provider="")
+    recorder.record_fallback(provider="   ")
+    recorder.record_tokens(provider="", model="m", input_tokens=-10, output_tokens=float("nan"))
+    recorder.record_cost(provider="p", model="", cost=-1.0)
+    recorder.record_cost(provider="p", model="m", cost=float("nan"))
+
+    metrics_map = _extract_metrics_by_name(reader)
+    assert len(metrics_map) == 0
+
+
+def test_tokens_validation_strict_non_negative_integers(isolated_meter_setup):
+    """record_tokens accepts non-negative integers only; floats, booleans, and malformed inputs are ignored."""
+    reader, recorder = isolated_meter_setup
+
+    # 1. Valid zero counts
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=0, output_tokens=0)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 1
+    assert in_pt.sum == 0
+    assert out_pt.count == 1
+    assert out_pt.sum == 0
+
+    # 2. Valid positive integers
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=120, output_tokens=80)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 2
+    assert in_pt.sum == 120
+    assert out_pt.count == 2
+    assert out_pt.sum == 80
+
+    # 3. Invalid inputs: floats (both fractional and whole), booleans, negatives, strings, and None
+    invalid_inputs = [
+        10.5,
+        10.0,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        -1,
+        -100,
+        "100",
+        [10],
+        {"tokens": 10},
+        None,
+    ]
+    for invalid in invalid_inputs:
+        recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=invalid, output_tokens=invalid)
+
+    # Counts must remain at 2 (no new observations from invalid inputs)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 2
+    assert in_pt.sum == 120
+    assert out_pt.count == 2
+    assert out_pt.sum == 80
+
+    # 4. Partial validity: valid input_tokens with invalid output_tokens records only input_tokens
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=50, output_tokens=12.5)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 3
+    assert in_pt.sum == 170
+    assert out_pt.count == 2  # Unchanged
+    assert out_pt.sum == 80
+
+    # 5. Partial validity: invalid input_tokens with valid output_tokens records only output_tokens
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=True, output_tokens=30)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 3  # Unchanged
+    assert in_pt.sum == 170
+    assert out_pt.count == 3
+    assert out_pt.sum == 110
