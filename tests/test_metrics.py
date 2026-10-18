@@ -563,3 +563,76 @@ def test_new_recording_methods_handle_invalid_inputs_safely(isolated_meter_setup
 
     metrics_map = _extract_metrics_by_name(reader)
     assert len(metrics_map) == 0
+
+
+def test_tokens_validation_strict_non_negative_integers(isolated_meter_setup):
+    """record_tokens accepts non-negative integers only; floats, booleans, and malformed inputs are ignored."""
+    reader, recorder = isolated_meter_setup
+
+    # 1. Valid zero counts
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=0, output_tokens=0)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 1
+    assert in_pt.sum == 0
+    assert out_pt.count == 1
+    assert out_pt.sum == 0
+
+    # 2. Valid positive integers
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=120, output_tokens=80)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 2
+    assert in_pt.sum == 120
+    assert out_pt.count == 2
+    assert out_pt.sum == 80
+
+    # 3. Invalid inputs: floats (both fractional and whole), booleans, negatives, strings, and None
+    invalid_inputs = [
+        10.5,
+        10.0,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        True,
+        False,
+        -1,
+        -100,
+        "100",
+        [10],
+        {"tokens": 10},
+        None,
+    ]
+    for invalid in invalid_inputs:
+        recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=invalid, output_tokens=invalid)
+
+    # Counts must remain at 2 (no new observations from invalid inputs)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 2
+    assert in_pt.sum == 120
+    assert out_pt.count == 2
+    assert out_pt.sum == 80
+
+    # 4. Partial validity: valid input_tokens with invalid output_tokens records only input_tokens
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=50, output_tokens=12.5)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 3
+    assert in_pt.sum == 170
+    assert out_pt.count == 2  # Unchanged
+    assert out_pt.sum == 80
+
+    # 5. Partial validity: invalid input_tokens with valid output_tokens records only output_tokens
+    recorder.record_tokens(provider="openai", model="gpt-4", input_tokens=True, output_tokens=30)
+    metrics_map = _extract_metrics_by_name(reader)
+    in_pt = list(metrics_map[INSTRUMENT_TOKENS_INPUT].data.data_points)[0]
+    out_pt = list(metrics_map[INSTRUMENT_TOKENS_OUTPUT].data.data_points)[0]
+    assert in_pt.count == 3  # Unchanged
+    assert in_pt.sum == 170
+    assert out_pt.count == 3
+    assert out_pt.sum == 110

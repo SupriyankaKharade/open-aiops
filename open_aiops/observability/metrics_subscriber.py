@@ -20,6 +20,11 @@ DEFAULT_MAX_DISTINCT_MODELS = 100
 DEFAULT_MAX_MODEL_LABEL_LENGTH = 64
 
 
+def _has_control_characters(val: str) -> bool:
+    """Detect ASCII/Unicode C0 and C1 control characters (e.g. tabs, newlines, NUL)."""
+    return any(ord(ch) < 32 or ord(ch) == 127 or (128 <= ord(ch) <= 159) for ch in val)
+
+
 class MetricsSubscriber:
     """Subscriber that translates lifecycle events into OpenTelemetry metrics.
 
@@ -41,7 +46,7 @@ class MetricsSubscriber:
 
         Args:
             recorder: Optional MetricsRecorder instance. Defaults to a new MetricsRecorder().
-            max_active_requests: Maximum number of in-flight requests tracked in memory.
+            max_active_requests: Maximum number of in-flight and terminal request IDs tracked in memory.
             max_distinct_models: Maximum distinct model labels permitted before overflow to 'other'.
             max_model_len: Maximum length of a model name before normalization to 'other'.
             log: Optional logger instance.
@@ -53,6 +58,7 @@ class MetricsSubscriber:
         self._log = log or logger
         self._lock = threading.Lock()
         self._requests: OrderedDict[str, dict] = OrderedDict()
+        self._terminal_requests: OrderedDict[str, None] = OrderedDict()
         self._known_models: set[str] = set()
 
     @property
@@ -66,25 +72,52 @@ class MetricsSubscriber:
         with self._lock:
             return len(self._requests)
 
+    @property
+    def terminal_requests_count(self) -> int:
+        """Return the number of recently finalized request IDs in the deduplication window."""
+        with self._lock:
+            return len(self._terminal_requests)
+
     def _cap_model(self, model: object) -> str:
         """Sanitize and bound model label to prevent cardinality explosions.
 
-        - Empty, non-string, or whitespace-only inputs map to 'unknown'.
-        - Strings exceeding max_model_len or containing newlines/CR map to 'other'.
-        - Distinct models exceeding max_distinct_models map to 'other'.
+        Enforces a deterministic total cardinality cap (max_distinct_models):
+        - If max_distinct_models == 1, only 'other' is ever emitted.
+        - If max_distinct_models == 2, capacity is reserved exclusively for 'unknown'
+          and 'other'; ordinary models overflow to 'other'.
+        - If max_distinct_models >= 3, capacity is reserved for 'unknown' and 'other',
+          permitting up to (max_distinct_models - 2) distinct ordinary models.
+        - Empty or non-string inputs normalize to 'unknown'.
+        - Inputs containing control characters (detected before stripping, including
+          tabs, newlines, and NUL) or exceeding max_model_len normalize to 'other'.
+        - Model contents are never included in log messages.
         """
+        if self._max_distinct_models == 1:
+            return "other"
+
         if not isinstance(model, str):
             return "unknown"
+
+        if _has_control_characters(model):
+            return "other"
+
         cleaned = model.strip()
         if not cleaned:
             return "unknown"
-        if len(cleaned) > self._max_model_len or "\n" in cleaned or "\r" in cleaned:
+
+        if len(cleaned) > self._max_model_len:
+            return "other"
+
+        if cleaned in ("unknown", "other"):
+            return cleaned
+
+        if self._max_distinct_models <= 2:
             return "other"
 
         with self._lock:
             if cleaned in self._known_models:
                 return cleaned
-            if len(self._known_models) < self._max_distinct_models:
+            if len(self._known_models) < (self._max_distinct_models - 2):
                 self._known_models.add(cleaned)
                 return cleaned
             return "other"
@@ -119,6 +152,25 @@ class MetricsSubscriber:
                     "succeeded": succeeded,
                     "error_type": error_type,
                 }
+
+    def _finalize_terminal_request(self, request_id: str) -> tuple[bool, Optional[dict]]:
+        """Atomically check bounded deduplication window and pop in-flight request state.
+
+        Returns:
+            (is_first_terminal, request_info) tuple. If is_first_terminal is False,
+            the request ID has already been recorded as terminal within the bounded
+            deduplication window and should be dropped to prevent duplicate counting.
+        """
+        with self._lock:
+            if request_id:
+                if request_id in self._terminal_requests:
+                    return False, None
+                if len(self._terminal_requests) >= self._max_active_requests:
+                    self._terminal_requests.popitem(last=False)
+                self._terminal_requests[request_id] = None
+
+            info = self._requests.pop(request_id, None) if request_id else None
+            return True, info
 
     def _pop_request(self, request_id: str) -> Optional[dict]:
         if not request_id:
@@ -253,7 +305,9 @@ class MetricsSubscriber:
 
     def _on_request_completed(self, event: LifecycleEvent) -> None:
         req_id = getattr(event, "request_id", "")
-        info = self._pop_request(req_id)
+        is_first, info = self._finalize_terminal_request(req_id)
+        if not is_first:
+            return
 
         provider = info["provider"] if info and "provider" in info else "unknown"
         raw_model = info["model"] if info and "model" in info else "unknown"
@@ -269,7 +323,9 @@ class MetricsSubscriber:
 
     def _on_request_failed(self, event: LifecycleEvent) -> None:
         req_id = getattr(event, "request_id", "")
-        info = self._pop_request(req_id)
+        is_first, info = self._finalize_terminal_request(req_id)
+        if not is_first:
+            return
 
         provider = info["provider"] if info and "provider" in info else "unknown"
         raw_model = info["model"] if info and "model" in info else "unknown"

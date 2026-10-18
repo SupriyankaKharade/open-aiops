@@ -518,31 +518,76 @@ def test_missing_usage_unknown_model_and_free_cost_handling(isolated_subscriber_
 
 
 def test_model_label_capping_and_cardinality_bound(isolated_subscriber_setup):
-    """Model labels are capped by length and distinct counts overflow to 'other'."""
+    """Model labels are capped by length, control chars normalize to 'other', and distinct counts never exceed cap."""
     reader, _, subscriber = isolated_subscriber_setup
-    # Configure subscriber with small distinct model cap of 3
-    subscriber._max_distinct_models = 3
+    # Configure subscriber with distinct model cap of 5:
+    # Reserved capacity: 'unknown' (1) and 'other' (1)
+    # Available ordinary model capacity: 5 - 2 = 3
+    subscriber._max_distinct_models = 5
     subscriber._max_model_len = 20
 
-    # 1. Normal model
-    subscriber._cap_model("gpt-4o") == "gpt-4o"
-    # 2. Second model
-    subscriber._cap_model("claude-3") == "claude-3"
-    # 3. Third model
-    subscriber._cap_model("gemini-1.5") == "gemini-1.5"
-    # 4. Fourth model exceeds max_distinct_models -> must be 'other'
-    assert subscriber._cap_model("mistral-large") == "other"
+    emitted_labels = set()
 
-    # 5. Model exceeding max_model_len (20 chars) -> must be 'other'
+    # 1. First 3 ordinary models are admitted
+    m1 = subscriber._cap_model("gpt-4o")
+    assert m1 == "gpt-4o"
+    emitted_labels.add(m1)
+
+    m2 = subscriber._cap_model("claude-3")
+    assert m2 == "claude-3"
+    emitted_labels.add(m2)
+
+    m3 = subscriber._cap_model("gemini-1.5")
+    assert m3 == "gemini-1.5"
+    emitted_labels.add(m3)
+
+    # Repeating an already known model remains valid
+    assert subscriber._cap_model("gpt-4o") == "gpt-4o"
+
+    # 2. 4th and 5th ordinary models exceed capacity (3) and overflow to 'other'
+    m4 = subscriber._cap_model("mistral-large")
+    assert m4 == "other"
+    emitted_labels.add(m4)
+
+    m5 = subscriber._cap_model("llama-3")
+    assert m5 == "other"
+    emitted_labels.add(m5)
+
+    # 3. Model exceeding max_model_len (20 chars) -> 'other'
     long_model = "a" * 25
-    assert subscriber._cap_model(long_model) == "other"
+    m_long = subscriber._cap_model(long_model)
+    assert m_long == "other"
+    emitted_labels.add(m_long)
 
-    # 6. Model containing newlines -> must be 'other'
+    # 4. Control characters detected before stripping -> 'other'
     assert subscriber._cap_model("model\nwith\nnewline") == "other"
+    assert subscriber._cap_model("model\rwith\rcr") == "other"
+    assert subscriber._cap_model("model\twith\ttab") == "other"
+    assert subscriber._cap_model("\tgpt-4o") == "other"
+    assert subscriber._cap_model("\t") == "other"
+    assert subscriber._cap_model("model\x00with\x00nul") == "other"
+    assert subscriber._cap_model("\x00") == "other"
+    assert subscriber._cap_model("model\x1fcontrol") == "other"
+    assert subscriber._cap_model("model\x7fdel") == "other"
 
-    # 7. Blank or non-string -> 'unknown'
-    assert subscriber._cap_model("   ") == "unknown"
+    # 5. Empty, whitespace-only, or non-string inputs -> 'unknown'
+    m_blank = subscriber._cap_model("   ")
+    assert m_blank == "unknown"
+    emitted_labels.add(m_blank)
+
+    assert subscriber._cap_model("") == "unknown"
     assert subscriber._cap_model(None) == "unknown"
+    assert subscriber._cap_model(12345) == "unknown"
+    assert subscriber._cap_model(["model"]) == "unknown"
+
+    # 6. Reserved inputs pass through without taking ordinary slots
+    assert subscriber._cap_model("other") == "other"
+    assert subscriber._cap_model("unknown") == "unknown"
+
+    # Total distinct emitted labels must NOT exceed max_distinct_models (5)
+    assert emitted_labels == {"gpt-4o", "claude-3", "gemini-1.5", "unknown", "other"}
+    assert len(emitted_labels) == 5
+    assert len(emitted_labels) <= subscriber._max_distinct_models
 
 
 def test_request_state_is_bounded_and_evicts_oldest(isolated_subscriber_setup):
@@ -685,3 +730,262 @@ def test_subscriber_with_default_recorder_operates_without_sdk():
     )
     subscriber(RequestCompleted(request_id=req_id, latency_s=0.15))
     assert subscriber.active_requests_count == 0
+
+
+def test_model_cardinality_deterministic_small_caps():
+    """Deterministic handling when max_distinct_models is <= 2."""
+    # 1. Cap == 1: only 'other' is ever emitted across all inputs
+    sub_cap1 = MetricsSubscriber(max_distinct_models=1)
+    inputs_to_test = [
+        "gpt-4o",
+        "claude-3",
+        "",
+        "   ",
+        None,
+        "\tgpt-4",
+        "other",
+        "unknown",
+        "a" * 100,
+    ]
+    emitted1 = {sub_cap1._cap_model(val) for val in inputs_to_test}
+    assert emitted1 == {"other"}
+    assert len(emitted1) <= 1
+
+    # 2. Cap == 2: capacity reserved for 'unknown' and 'other'; ordinary models overflow to 'other'
+    sub_cap2 = MetricsSubscriber(max_distinct_models=2)
+    emitted2 = set()
+    for val in inputs_to_test:
+        emitted2.add(sub_cap2._cap_model(val))
+    assert emitted2.issubset({"unknown", "other"})
+    assert len(emitted2) <= 2
+
+
+def test_total_distinct_model_labels_strictly_bounded_under_load():
+    """Total distinct emitted model attribute values strictly remain within configured cap under load."""
+    sub = MetricsSubscriber(max_distinct_models=10)
+    all_emitted = set()
+
+    # Feed 100 distinct valid model names
+    for i in range(100):
+        all_emitted.add(sub._cap_model(f"model-service-variant-{i}"))
+
+    # Feed control-character strings (tabs, NUL, newlines, DEL)
+    all_emitted.add(sub._cap_model("tab\tmodel"))
+    all_emitted.add(sub._cap_model("\0nul_model"))
+    all_emitted.add(sub._cap_model("newline\nmodel"))
+    all_emitted.add(sub._cap_model("del\x7fmodel"))
+
+    # Feed overlong strings
+    all_emitted.add(sub._cap_model("x" * 100))
+
+    # Feed blanks, non-strings, and whitespace
+    all_emitted.add(sub._cap_model("    "))
+    all_emitted.add(sub._cap_model(""))
+    all_emitted.add(sub._cap_model(None))
+    all_emitted.add(sub._cap_model(999))
+
+    # Emitted distinct values must strictly be <= 10
+    assert len(all_emitted) <= 10
+    # Must include 'unknown' and 'other'
+    assert "unknown" in all_emitted
+    assert "other" in all_emitted
+
+
+def test_repeated_request_completed_events_are_idempotent(isolated_subscriber_setup):
+    """Repeated RequestCompleted events for the same request ID are deduplicated and do not double count."""
+    reader, _, subscriber = isolated_subscriber_setup
+    dispatcher = EventDispatcher(subscribers=[subscriber])
+
+    req_id = new_id()
+    att_id = new_id()
+
+    events = [
+        RequestStarted(request_id=req_id),
+        AttemptStarted(request_id=req_id, attempt_id=att_id, attempt_number=1, provider="openai", model="gpt-4o"),
+        AttemptSucceeded(
+            request_id=req_id,
+            attempt_id=att_id,
+            attempt_number=1,
+            provider="openai",
+            model="gpt-4o",
+            latency_s=0.5,
+        ),
+        RequestCompleted(request_id=req_id, latency_s=0.55),
+    ]
+    for event in events:
+        dispatcher.emit(event)
+
+    assert subscriber.active_requests_count == 0
+    assert subscriber.terminal_requests_count == 1
+
+    # Send duplicate RequestCompleted events
+    dispatcher.emit(RequestCompleted(request_id=req_id, latency_s=0.55))
+    dispatcher.emit(RequestCompleted(request_id=req_id, latency_s=0.55))
+
+    metrics_map = _extract_metrics_by_name(reader)
+
+    # Request count must remain exactly 1 (not 3!)
+    req_pts = list(metrics_map[INSTRUMENT_REQUESTS].data.data_points)
+    assert len(req_pts) == 1
+    assert req_pts[0].value == 1
+
+    # Request duration observation count must remain exactly 1 (not 3!)
+    dur_pts = list(metrics_map[INSTRUMENT_REQUEST_DURATION].data.data_points)
+    assert len(dur_pts) == 1
+    assert dur_pts[0].count == 1
+    assert dur_pts[0].sum == pytest.approx(0.55)
+
+
+def test_repeated_request_failed_events_are_idempotent(isolated_subscriber_setup):
+    """Repeated RequestFailed events for the same request ID do not record duplicate failure counts."""
+    reader, _, subscriber = isolated_subscriber_setup
+    dispatcher = EventDispatcher(subscribers=[subscriber])
+
+    req_id = new_id()
+    att_id = new_id()
+
+    events = [
+        RequestStarted(request_id=req_id),
+        AttemptStarted(request_id=req_id, attempt_id=att_id, attempt_number=1, provider="openai", model="gpt-4"),
+        AttemptFailed(
+            request_id=req_id,
+            attempt_id=att_id,
+            attempt_number=1,
+            provider="openai",
+            model="gpt-4",
+            error_type="ProviderTimeout",
+            retryable=False,
+            failover_eligible=False,
+        ),
+        RequestFailed(request_id=req_id, error_type="ProviderTimeout"),
+    ]
+    for event in events:
+        dispatcher.emit(event)
+
+    assert subscriber.active_requests_count == 0
+    assert subscriber.terminal_requests_count == 1
+
+    # Emit duplicate RequestFailed event
+    dispatcher.emit(RequestFailed(request_id=req_id, error_type="ProviderTimeout"))
+
+    metrics_map = _extract_metrics_by_name(reader)
+    req_pts = list(metrics_map[INSTRUMENT_REQUESTS].data.data_points)
+    assert len(req_pts) == 1
+    assert req_pts[0].value == 1
+    assert req_pts[0].attributes["outcome"] == "error"
+
+
+def test_mixed_terminal_events_same_request_id_are_idempotent(isolated_subscriber_setup):
+    """Mixed terminal event types (Completed then Failed, or Failed then Completed) for same ID are ignored."""
+    reader, _, subscriber = isolated_subscriber_setup
+    dispatcher = EventDispatcher(subscribers=[subscriber])
+
+    # Case 1: Completed followed by Failed
+    req1 = new_id()
+    dispatcher.emit(RequestStarted(request_id=req1))
+    dispatcher.emit(
+        AttemptStarted(request_id=req1, attempt_id=new_id(), attempt_number=1, provider="p1", model="m1")
+    )
+    dispatcher.emit(
+        AttemptSucceeded(
+            request_id=req1, attempt_id=new_id(), attempt_number=1, provider="p1", model="m1", latency_s=0.2
+        )
+    )
+    dispatcher.emit(RequestCompleted(request_id=req1, latency_s=0.25))
+
+    # Duplicate terminal event with different type (RequestFailed)
+    dispatcher.emit(RequestFailed(request_id=req1, error_type="ProviderTimeout"))
+
+    # Case 2: Failed followed by Completed
+    req2 = new_id()
+    dispatcher.emit(RequestStarted(request_id=req2))
+    dispatcher.emit(
+        AttemptStarted(request_id=req2, attempt_id=new_id(), attempt_number=1, provider="p2", model="m2")
+    )
+    dispatcher.emit(
+        AttemptFailed(
+            request_id=req2,
+            attempt_id=new_id(),
+            attempt_number=1,
+            provider="p2",
+            model="m2",
+            error_type="RateLimitError",
+            retryable=False,
+            failover_eligible=False,
+        )
+    )
+    dispatcher.emit(RequestFailed(request_id=req2, error_type="RateLimitError"))
+
+    # Duplicate terminal event with different type (RequestCompleted)
+    dispatcher.emit(RequestCompleted(request_id=req2, latency_s=0.10))
+
+    metrics_map = _extract_metrics_by_name(reader)
+    req_pts = list(metrics_map[INSTRUMENT_REQUESTS].data.data_points)
+    # Total requests should be 2 (1 success from req1, 1 error from req2)
+    assert len(req_pts) == 2
+    outcomes = {p.attributes["outcome"]: p.value for p in req_pts}
+    assert outcomes == {"success": 1, "error": 1}
+
+    # Duration histogram must contain only 1 observation (from req1)
+    dur_pts = list(metrics_map[INSTRUMENT_REQUEST_DURATION].data.data_points)
+    assert len(dur_pts) == 1
+    assert dur_pts[0].count == 1
+
+
+def test_terminal_request_deduplication_is_bounded(isolated_subscriber_setup):
+    """Terminal deduplication cache is strictly bounded by max_active_requests."""
+    reader, _, subscriber = isolated_subscriber_setup
+    subscriber._max_active_requests = 2
+
+    req1, req2, req3 = new_id(), new_id(), new_id()
+
+    # Emit completion for req1 and req2 -> both in deduplication cache
+    subscriber(RequestCompleted(request_id=req1, latency_s=0.1))
+    subscriber(RequestCompleted(request_id=req2, latency_s=0.2))
+    assert subscriber.terminal_requests_count == 2
+    assert req1 in subscriber._terminal_requests
+    assert req2 in subscriber._terminal_requests
+
+    # Duplicate req1 is dropped while still in cache
+    subscriber(RequestCompleted(request_id=req1, latency_s=0.1))
+    metrics_map = _extract_metrics_by_name(reader)
+    assert metrics_map[INSTRUMENT_REQUESTS].data.data_points[0].value == 2
+
+    # Third distinct completion evicts oldest (req1) from bounded cache
+    subscriber(RequestCompleted(request_id=req3, latency_s=0.3))
+    assert subscriber.terminal_requests_count == 2
+    assert req1 not in subscriber._terminal_requests
+    assert req2 in subscriber._terminal_requests
+    assert req3 in subscriber._terminal_requests
+
+    # Because req1 was evicted from the bounded window, another event for req1 is now processed
+    subscriber(RequestCompleted(request_id=req1, latency_s=0.1))
+    metrics_map = _extract_metrics_by_name(reader)
+    assert metrics_map[INSTRUMENT_REQUESTS].data.data_points[0].value == 4
+
+
+def test_terminal_event_without_active_attempt_state_is_safe(isolated_subscriber_setup):
+    """A valid terminal event with no active attempt metadata records safely with 'unknown' labels."""
+    reader, _, subscriber = isolated_subscriber_setup
+
+    req_id = new_id()
+    # Emit RequestCompleted without prior AttemptStarted
+    subscriber(RequestCompleted(request_id=req_id, latency_s=0.33))
+
+    assert subscriber.active_requests_count == 0
+    assert subscriber.terminal_requests_count == 1
+
+    metrics_map = _extract_metrics_by_name(reader)
+    req_pts = list(metrics_map[INSTRUMENT_REQUESTS].data.data_points)
+    assert len(req_pts) == 1
+    assert req_pts[0].attributes == {"provider": "unknown", "model": "unknown", "outcome": "success"}
+    assert req_pts[0].value == 1
+
+    dur_pts = list(metrics_map[INSTRUMENT_REQUEST_DURATION].data.data_points)
+    assert len(dur_pts) == 1
+    assert dur_pts[0].attributes == {"provider": "unknown", "model": "unknown", "outcome": "success"}
+    assert dur_pts[0].sum == pytest.approx(0.33)
+
+    # Duplicate is still deduplicated
+    subscriber(RequestCompleted(request_id=req_id, latency_s=0.33))
+    assert list(metrics_map[INSTRUMENT_REQUESTS].data.data_points)[0].value == 1

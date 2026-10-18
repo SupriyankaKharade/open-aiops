@@ -94,6 +94,18 @@ def _is_valid_duration(duration: object) -> bool:
     return True
 
 
+def _is_valid_token_count(val: object) -> bool:
+    """Validate that token count is a non-negative integer, excluding booleans.
+
+    Args:
+        val: Token count candidate.
+
+    Returns:
+        True if val is a valid non-negative integer and not a boolean.
+    """
+    return isinstance(val, int) and not isinstance(val, bool) and val >= 0
+
+
 def _normalize_outcome(outcome: object) -> str:
     """Validate and normalize outcome to the supported bounded vocabulary.
 
@@ -445,11 +457,16 @@ class MetricsRecorder:
     ) -> None:
         """Record input and output token distributions per attempt.
 
+        Only non-negative integers are accepted; floats, booleans, negatives,
+        and non-numeric values are safely ignored without raising exceptions.
+        An invalid input_tokens does not prevent a valid output_tokens from
+        being recorded (and vice versa).
+
         Args:
             provider: LLM provider name.
             model: Model identifier.
-            input_tokens: Optional count of input prompt tokens.
-            output_tokens: Optional count of output completion tokens.
+            input_tokens: Optional count of input prompt tokens (non-negative integer).
+            output_tokens: Optional count of output completion tokens (non-negative integer).
         """
         try:
             provider_clean = _validate_identifier(provider)
@@ -462,26 +479,14 @@ class MetricsRecorder:
                 "model": model_clean,
             }
 
-            if (
-                isinstance(input_tokens, (int, float))
-                and not isinstance(input_tokens, bool)
-                and not math.isnan(input_tokens)
-                and not math.isinf(input_tokens)
-                and input_tokens >= 0
-            ):
+            if _is_valid_token_count(input_tokens):
                 self.tokens_input_histogram.record(
-                    float(input_tokens), attributes=attributes
+                    int(input_tokens), attributes=attributes
                 )
 
-            if (
-                isinstance(output_tokens, (int, float))
-                and not isinstance(output_tokens, bool)
-                and not math.isnan(output_tokens)
-                and not math.isinf(output_tokens)
-                and output_tokens >= 0
-            ):
+            if _is_valid_token_count(output_tokens):
                 self.tokens_output_histogram.record(
-                    float(output_tokens), attributes=attributes
+                    int(output_tokens), attributes=attributes
                 )
         except Exception as exc:
             try:
