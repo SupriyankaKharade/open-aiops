@@ -4,7 +4,11 @@ __author__ = "OpenAIOps Contributors"
 __license__ = "Apache-2.0"
 __description__ = "Open-source control plane for resilient, observable, and governed AI agent fleets."
 
+from open_aiops.gateway import Gateway, GatewayResult
+
 __all__ = [
+    "Gateway",
+    "GatewayResult",
     "__title__",
     "__version__",
     "__author__",
